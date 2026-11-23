@@ -31,6 +31,8 @@
 #include <filesystem>
 #include <map>
 #include <thread>
+
+#include <unistd.h>
 #include <vector>
 
 #include <sys/sysmacros.h>
@@ -122,7 +124,6 @@ namespace
     uint64_t                         gen;
     bool                             force_scan;
     std::string                      index_dir;
-    bool                             write_if_changed;
     uint64_t                         mlock;
   };
 
@@ -189,6 +190,16 @@ namespace
     if(!job_.force_scan && !file.empty() && ::_try_load(job_,file))
       return;
 
+    // A rescan means the branch changed: the old file must never be
+    // loaded again, even if this scan or the save below fails or is
+    // interrupted. Until a new file is written the next mount scans.
+    if(job_.force_scan && !file.empty())
+      {
+        if((::unlink(file.c_str()) < 0) && (errno != ENOENT))
+          SysLog::error("index: cannot remove stale `{}`: {}",
+                        file,strerror(errno));
+      }
+
     if(!::_set_state(*job_.slot,job_.gen,BranchIndexSlot::SCANNING))
       return;
 
@@ -205,21 +216,13 @@ namespace
 
     if(!file.empty())
       {
-        bool written = false;
         std::shared_ptr<BranchIndex::Index> mapped;
 
-        rv = BranchIndex::save(*idx,file,job_.write_if_changed,&written);
+        // always written: a scan only happens without a usable file or
+        // after a change (rescan)
+        rv = BranchIndex::save(*idx,file,false,nullptr);
         if(rv == 0)
           rv = BranchIndex::load(file,&mapped);
-
-        // an existing file with the right signature in its header but
-        // damaged content: rewrite it
-        if((rv < 0) && !written)
-          {
-            rv = BranchIndex::save(*idx,file,false,&written);
-            if(rv == 0)
-              rv = BranchIndex::load(file,&mapped);
-          }
 
         if(rv < 0)
           {
@@ -294,7 +297,6 @@ namespace
     job.slot             = branch_.index_slot;
     job.force_scan       = force_scan_;
     job.index_dir        = cfg.index_path;
-    job.write_if_changed = cfg.index_write_if_changed;
     job.mlock            = cfg.index_mlock;
 
     // the branch answers directly until the new index is published

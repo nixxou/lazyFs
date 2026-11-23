@@ -3,7 +3,6 @@
 * branch mode `ROC`: `/mnt/disk1/archive=ROC`
 * `index.path=PATH`: where indexes are stored. Defaults to empty (kept
   in memory, every mount rescans).
-* `index.write-if-changed=true|false`: defaults to `true`
 * `index.mlock=SIZE`: defaults to `0` (nothing locked)
 
 Every metadata request sent to mergerfs (`getattr`, `readdir`, looking
@@ -12,8 +11,9 @@ branches, which can spin up sleeping hard drives even when nobody
 reads any file data. See [Limiting drive
 spinup](../faq/limit_drive_spinup.md).
 
-A branch in mode `ROC` behaves exactly like `RO` (excluded from
-`create` and `action` policies, so mergerfs never modifies it) and its
+A branch in mode `ROC` behaves like `RO` (excluded from `create` and
+`action` policies) and in addition files on it cannot be opened for
+writing or truncation (`EROFS`), so mergerfs never modifies it. Its
 metadata is answered from an index of the branch instead of the drive.
 Answers include reliable negative ones: looking up a file which does
 not exist on a ROC branch does not touch it.
@@ -62,13 +62,19 @@ its drive.
 3. The index is written to `index.path` (atomically: temporary file,
    `fsync`, `rename`) and memory mapped, so the kernel can drop unused
    pages under memory pressure and read them back from that file
-   rather than from the branch. `index.write-if-changed=true` skips
-   rewriting a file whose content signature did not change, avoiding
-   needless SSD writes. Files are fully validated when loaded and a
-   damaged one is rewritten.
+   rather than from the branch. Files are fully validated when loaded
+   and a damaged one is rewritten.
+4. A rescan removes the branch's index file before scanning. If the
+   scan or the save fails, or mergerfs stops meanwhile, the next mount
+   scans again rather than loading metadata known to be outdated.
 
 `index.path` must be on storage which is always available, such as the
 system SSD. Never put it on one of the branches or inside the pool.
+Index files reveal the names, owners and sizes of everything on the
+branch, including directories other users cannot list: they are
+created `0600`, files owned by another user or accessible to others are
+ignored (the branch is rescanned), and `index.path` itself should be
+`0700`.
 
 `index.mlock=SIZE` (per branch, e.g. `64M`) locks part of each mapped
 index in RAM, most useful parts first (directory table, then entries,
@@ -88,6 +94,9 @@ avoid `MemoryMax=`, which can kill mergerfs.
   not indexed: anything at or below it is always queried live. So are
   paths going through a symlink.
 * `atime` is not indexed; `mtime` is reported instead.
+* A file already open for writing when its branch is switched to
+  `ROC` at runtime can still be written through that descriptor;
+  request a rescan once it is closed.
 * Only Linux is supported.
 
 
@@ -112,6 +121,7 @@ requests a rescan of the branches it changed.
 ## Example
 
 ```
+install -d -m 0700 /var/lib/mergerfs/index
 mergerfs -o index.path=/var/lib/mergerfs/index \
   /mnt/ssd:/mnt/disk1/archive=ROC:/mnt/disk2/archive=ROC /mnt/pool
 ```

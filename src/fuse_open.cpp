@@ -260,6 +260,22 @@ _config_to_ffi_flags(const int         tid_,
     ffi_->parallel_direct_writes = ffi_->direct_io;
 }
 
+// A ROC branch is never modified through mergerfs: its index would
+// silently go stale. Every write, truncate, fallocate, fchmod, ... goes
+// through a descriptor obtained here, so refusing writable opens is
+// enough.
+static
+bool
+_refuse_on_roc(const Branch *branch_,
+               const int     flags_)
+{
+  if(!branch_->roc())
+    return false;
+
+  return (((flags_ & O_ACCMODE) != O_RDONLY) ||
+          (flags_ & O_TRUNC));
+}
+
 static
 int
 _open_path(const fs::path    &filepath_,
@@ -270,6 +286,9 @@ _open_path(const fs::path    &filepath_,
 {
   int fd;
   FileInfo *fi;
+
+  if(::_refuse_on_roc(branch_,ffi_->flags))
+    return -EROFS;
 
   fd = fs::openat(AT_FDCWD,filepath_,ffi_->flags);
   if(fd == -EACCES)
@@ -293,6 +312,9 @@ _open_fd(const int         fd_,
 {
   int fd;
   FileInfo *fi;
+
+  if(::_refuse_on_roc(branch_,ffi_->flags))
+    return -EROFS;
 
   fd = fs::open_fd(fd_,ffi_->flags);
   if(fd < 0)
@@ -323,6 +345,10 @@ _open(const Policy::Search &searchFunc_,
     return rv;
   if(obranches.empty())
     return -ENOENT;
+
+  // before link_cow, which would copy the file inside the branch
+  if(::_refuse_on_roc(obranches[0],ffi_->flags))
+    return -EROFS;
 
   filepath = obranches[0]->path / fusepath_;
 

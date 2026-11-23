@@ -227,6 +227,11 @@ test_branch_index_save_load_roundtrip()
   TEST_ASSERT(BranchIndex::save(*built,file,true,&written) == 0);
   TEST_CHECK(written);
   TEST_CHECK(std::filesystem::file_size(file) == built->byte_size());
+  {
+    struct stat st;
+    TEST_ASSERT(::stat(file.c_str(),&st) == 0);
+    TEST_CHECK((st.st_mode & 07777) == 0600);
+  }
 
   TEST_ASSERT(BranchIndex::load(file,&loaded) == 0);
   TEST_CHECK(loaded->mapped());
@@ -505,4 +510,43 @@ test_branch_index_mountinfo()
   TEST_CHECK(bi_lookup(*idx,"Films/Alien.mkv") == R::FOUND);
   TEST_CHECK(idx->list("Films",&kids) == R::FOUND);
   TEST_CHECK(bi_names(*idx,kids).size() == 4);
+}
+
+static
+void
+test_branch_index_file_permissions()
+{
+  BITree t;
+  std::string file;
+  std::shared_ptr<BranchIndex::Index> idx;
+  std::shared_ptr<BranchIndex::Index> loaded;
+  const mode_t old_umask = ::umask(0);   // like mergerfs
+
+  t.populate();
+  file = (t.idxdir / "branch.idx").string();
+  TEST_ASSERT(BranchIndex::build(t.root,&idx) == 0);
+  TEST_ASSERT(BranchIndex::save(*idx,file,false,nullptr) == 0);
+
+  struct stat st;
+  TEST_ASSERT(::stat(file.c_str(),&st) == 0);
+  TEST_CHECK((st.st_mode & 07777) == 0600);
+  TEST_CHECK(BranchIndex::load(file,&loaded) == 0);
+
+  // readable or writable by others: refused
+  for(mode_t m : {0644,0640,0604,0602,0660})
+    {
+      TEST_ASSERT(::chmod(file.c_str(),m) == 0);
+      TEST_CHECK(BranchIndex::load(file,&loaded) == -EACCES);
+      TEST_MSG("mode %o",m);
+    }
+
+  // owned by someone else: refused
+  TEST_ASSERT(::chmod(file.c_str(),0600) == 0);
+  if(::geteuid() == 0)
+    {
+      TEST_ASSERT(::chown(file.c_str(),12345,12345) == 0);
+      TEST_CHECK(BranchIndex::load(file,&loaded) == -EACCES);
+    }
+
+  ::umask(old_umask);
 }

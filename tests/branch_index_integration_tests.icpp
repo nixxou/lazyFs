@@ -8,7 +8,10 @@
 #include "fuse_readdir_cor.hpp"
 #include "fuse_readdir_cosr.hpp"
 #include "fuse_readdir_seq.hpp"
+#include "fuse_open.hpp"
 #include "fuse_readlink.hpp"
+#include "fuse_release.hpp"
+#include "procfs.hpp"
 
 #include <map>
 #include <set>
@@ -32,7 +35,6 @@ namespace
                                                        &cfg.follow_symlinks,
                                                        &cfg.symlinkify,
                                                        &cfg.index_path,
-                                                       &cfg.index_write_if_changed,
                                                        &cfg.index_mlock})
         saved.emplace_back(o,o->to_string());
     }
@@ -69,7 +71,6 @@ namespace
       cfg.symlinkify             = false;
       cfg.posix_acl              = false;
       cfg.index_path             = t.idxdir.string();
-      cfg.index_write_if_changed = true;
       cfg.index_mlock            = 0;
       set_branches(t.root.string() + "=ROC:" + rw.string());
     }
@@ -436,8 +437,7 @@ test_branch_index_roc_repairs_damaged_file()
   std::ofstream(file,std::ios::binary|std::ios::trunc) << data;
   TEST_CHECK(BranchIndex::load(file,&loaded) == -EBADMSG);
 
-  // next mount: rejected, rescanned and rewritten despite
-  // write-if-changed
+  // next mount: rejected, rescanned and rewritten
   p.set_branches(p.t.root.string() + "=ROC:" + p.rw.string());
   BranchIndexMgr::refresh(cfg.branches);
   TEST_ASSERT(p.wait_ready(0));
@@ -553,4 +553,135 @@ test_branch_index_one_scan_per_disk()
   std::string st = BranchIndexMgr::status(cfg.branches);
   TEST_CHECK(st.find(BranchIndexMgr::disk_key(a)) != std::string::npos);
   TEST_MSG("%s",st.c_str());
+}
+
+namespace
+{
+  int
+  bi_open(const char *path_,
+          const int   flags_,
+          const u64   nodeid_,
+          fuse_file_info_t *ffi_)
+  {
+    fuse_req_ctx_t ctx = bi_ctx();
+
+    ctx.nodeid = nodeid_;
+    *ffi_ = {};
+    ffi_->flags = flags_;
+
+    return FUSE::open(&ctx,path_,ffi_);
+  }
+
+  void
+  bi_release(const u64         nodeid_,
+             fuse_file_info_t *ffi_)
+  {
+    fuse_req_ctx_t ctx = bi_ctx();
+
+    ctx.nodeid = nodeid_;
+    FUSE::release(&ctx,ffi_);
+  }
+}
+
+static
+void
+test_branch_index_roc_refuses_writes()
+{
+  BIPool p;
+  fuse_file_info_t ffi;
+  fuse_file_info_t ffi2;
+
+  // reopening an already open file goes through /proc/self/fd, set up
+  // by FUSE::init in mergerfs
+  procfs::init();
+
+  BranchIndexMgr::refresh(cfg.branches);
+  TEST_ASSERT(p.wait_ready(0));
+
+  // top.txt only exists on the ROC branch
+  for(int flags : {O_WRONLY,O_RDWR,O_RDONLY|O_TRUNC,O_WRONLY|O_APPEND})
+    {
+      TEST_CHECK(bi_open("top.txt",flags,0x1000 + flags,&ffi) == -EROFS);
+      TEST_MSG("flags %#x",flags);
+    }
+
+  // reading is fine, and so is writing on the RW branch
+  TEST_ASSERT(bi_open("top.txt",O_RDONLY,0x2000,&ffi) == 0);
+  TEST_ASSERT(bi_open("rwonly.txt",O_RDWR,0x2001,&ffi2) == 0);
+  bi_release(0x2001,&ffi2);
+
+  // a second open of an already open file reuses its descriptor: the
+  // same rule applies on that path
+  TEST_CHECK(bi_open("top.txt",O_WRONLY,0x2000,&ffi2) == -EROFS);
+  TEST_CHECK(bi_open("top.txt",O_RDONLY,0x2000,&ffi2) == 0);
+  bi_release(0x2000,&ffi2);
+  bi_release(0x2000,&ffi);
+
+  // content untouched, index still right
+  TEST_CHECK(bi_getattr("top.txt").st.st_size == 3);
+  {
+    std::ifstream in(p.t.root / "top.txt");
+    std::string s((std::istreambuf_iterator<char>(in)),{});
+    TEST_CHECK(s == "top");
+  }
+}
+
+static
+void
+test_branch_index_roc_rescan_forgets_old_file()
+{
+  // a rescan whose result cannot be saved must not leave the previous
+  // file around to be loaded again at next mount
+  BIPool p;
+
+  BranchIndexMgr::refresh(cfg.branches);
+  TEST_ASSERT(p.wait_ready(0));
+  const fs::path file = p.index_file(p.t.root);
+  TEST_ASSERT(std::filesystem::exists(file));
+
+  // make the next save fail: a directory where its temporary file goes
+  const fs::path blocker = file.string() + ".tmp." + std::to_string(::getpid());
+  std::filesystem::create_directories(blocker / "x");
+
+  std::ofstream(p.t.root / "Films" / "Sneaky.mkv") << "x";
+  TEST_CHECK(BranchIndexMgr::rescan(cfg.branches,"all") == 0);
+  TEST_ASSERT(p.wait_ready(0));
+  // served from memory, with the change
+  TEST_CHECK(BranchIndexMgr::status(cfg.branches).find("memory") != std::string::npos);
+  TEST_CHECK(bi_getattr("Films/Sneaky.mkv").rv == 0);
+  // the stale file is gone...
+  TEST_CHECK(!std::filesystem::exists(file));
+
+  // ...so the next mount scans instead of resurrecting old metadata
+  std::filesystem::remove_all(blocker);
+  p.set_branches(p.t.root.string() + "=ROC:" + p.rw.string());
+  BranchIndexMgr::refresh(cfg.branches);
+  TEST_ASSERT(p.wait_ready(0));
+  TEST_CHECK(bi_getattr("Films/Sneaky.mkv").rv == 0);
+  TEST_CHECK(std::filesystem::exists(file));
+}
+
+static
+void
+test_branch_index_roc_rejects_foreign_file()
+{
+  // an index file readable by others is not used: the branch is
+  // rescanned and the file rewritten 0600
+  BIPool p;
+
+  BranchIndexMgr::refresh(cfg.branches);
+  TEST_ASSERT(p.wait_ready(0));
+  const fs::path file = p.index_file(p.t.root);
+  TEST_ASSERT(::chmod(file.c_str(),0644) == 0);
+
+  std::ofstream(p.t.root / "Films" / "Sneaky.mkv") << "x";
+  p.set_branches(p.t.root.string() + "=ROC:" + p.rw.string());
+  BranchIndexMgr::refresh(cfg.branches);
+  TEST_ASSERT(p.wait_ready(0));
+  // rescanned (sees the new file), not loaded
+  TEST_CHECK(bi_getattr("Films/Sneaky.mkv").rv == 0);
+
+  struct stat st;
+  TEST_ASSERT(::stat(file.c_str(),&st) == 0);
+  TEST_CHECK((st.st_mode & 07777) == 0600);
 }

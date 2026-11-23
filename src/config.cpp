@@ -100,7 +100,6 @@ Config::Config()
   ignorepponrename(false),
   index_mlock(0),
   index_path(),
-  index_write_if_changed(true),
   inodecalc("hybrid-hash"),
   kernel_permissions_check(true),
   lazy_umount_mountpoint(false),
@@ -253,7 +252,6 @@ Config::Config()
   _map["ignorepponrename"]            = &ignorepponrename;
   _map["index.mlock"]                 = &index_mlock;
   _map["index.path"]                  = &index_path;
-  _map["index.write-if-changed"]      = &index_write_if_changed;
   _map["inodecalc"]                   = &inodecalc;
   _map["kernel-cache"]                = &_dummy;
   _map["kernel-permissions-check"]    = &kernel_permissions_check;

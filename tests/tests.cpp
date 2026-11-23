@@ -4468,5 +4468,9 @@ TEST_LIST =
    {"branch_index_filename_per_branch",test_branch_index_filename_per_branch},
    {"branch_index_disk_key_sysfs",test_branch_index_disk_key_sysfs},
    {"branch_index_one_scan_per_disk",test_branch_index_one_scan_per_disk},
+   {"branch_index_file_permissions",test_branch_index_file_permissions},
+   {"branch_index_roc_refuses_writes",test_branch_index_roc_refuses_writes},
+   {"branch_index_roc_rescan_forgets_old_file",test_branch_index_roc_rescan_forgets_old_file},
+   {"branch_index_roc_rejects_foreign_file",test_branch_index_roc_rejects_foreign_file},
    {NULL,NULL}
   };

@@ -228,15 +228,16 @@ namespace BranchIndex
   std::vector<std::string> mountpoints_below(const std::string &root,
                                              const std::string &mountinfo);
 
-  // Write `index_` to `filepath_` atomically (tmp + fsync + rename).
-  // With `write_if_changed_` the existing file is kept when it holds
-  // the same signature. `*written_` tells if a write happened.
+  // Write `index_` to `filepath_` atomically (tmp + fsync + rename),
+  // mode 0600. With `write_if_changed_` the existing file is kept when
+  // it holds the same signature. `*written_` tells if a write happened.
   int save(const Index       &index,
            const std::string &filepath,
            bool               write_if_changed,
            bool              *written);
 
   // Map and fully validate (bounds and signature) an index file.
+  // -EACCES if it is not owned by us or is accessible to others.
   int load(const std::string       &filepath,
            std::shared_ptr<Index>  *index);
 

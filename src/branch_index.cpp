@@ -948,9 +948,17 @@ BranchIndex::save(const Index       &index_,
   tmp = filepath_ + ".tmp." + std::to_string(::getpid());
 
   {
-    ScopedFD fd(::open(tmp.c_str(),O_WRONLY|O_CREAT|O_TRUNC|O_CLOEXEC,0644));
+    // the index reveals names, owners and sizes of files in
+    // directories other users may not be allowed to list
+    ScopedFD fd(::open(tmp.c_str(),O_WRONLY|O_CREAT|O_TRUNC|O_CLOEXEC,0600));
     if(fd.fd < 0)
       return -errno;
+    if(::fchmod(fd.fd,0600) < 0)
+      {
+        rv = -errno;
+        ::unlink(tmp.c_str());
+        return rv;
+      }
 
     const std::pair<const void*,Section> parts[] =
       {
@@ -1015,6 +1023,11 @@ BranchIndex::load(const std::string      &filepath_,
       return -errno;
     if(::fstat(fd.fd,&st) < 0)
       return -errno;
+    if(!S_ISREG(st.st_mode))
+      return -EBADMSG;
+    // written by someone else or readable by others: not ours to use
+    if((st.st_uid != ::geteuid()) || (st.st_mode & 077))
+      return -EACCES;
     if(static_cast<uint64_t>(st.st_size) < HEADER_SIZE)
       return -EBADMSG;
 
