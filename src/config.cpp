@@ -98,6 +98,9 @@ Config::Config()
   handle_killpriv(true),
   handle_killpriv_v2(true),
   ignorepponrename(false),
+  index_mlock(0),
+  index_path(),
+  index_write_if_changed(true),
   inodecalc("hybrid-hash"),
   kernel_permissions_check(true),
   lazy_umount_mountpoint(false),
@@ -248,6 +251,9 @@ Config::Config()
   _map["handle-killpriv-v2"]          = &handle_killpriv_v2;
   _map["hard-remove"]                 = &_dummy;
   _map["ignorepponrename"]            = &ignorepponrename;
+  _map["index.mlock"]                 = &index_mlock;
+  _map["index.path"]                  = &index_path;
+  _map["index.write-if-changed"]      = &index_write_if_changed;
   _map["inodecalc"]                   = &inodecalc;
   _map["kernel-cache"]                = &_dummy;
   _map["kernel-permissions-check"]    = &kernel_permissions_check;

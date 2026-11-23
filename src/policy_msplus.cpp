@@ -19,6 +19,7 @@
 #include "policy_msplus.hpp"
 
 #include "errno.hpp"
+#include "branch_index_mgr.hpp"
 #include "fs_exists.hpp"
 #include "fs_info.hpp"
 #include "fs_path.hpp"
@@ -47,7 +48,7 @@ _create_1(const Branches::Ptr &branches_,
     {
       if(branch.ro_or_nc())
         error_and_continue(*err_,EROFS);
-      if(!fs::exists(branch.path,fusepath_))
+      if(!fs::exists(branch,fusepath_))
         error_and_continue(*err_,ENOENT);
       rv = fs::info(branch.path,&info);
       if(rv < 0)

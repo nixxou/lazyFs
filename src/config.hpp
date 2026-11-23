@@ -134,6 +134,9 @@ public:
   ConfigBOOL     handle_killpriv;
   ConfigBOOL     handle_killpriv_v2;
   ConfigBOOL     ignorepponrename;
+  ConfigU64      index_mlock;
+  ConfigSTR      index_path;
+  ConfigBOOL     index_write_if_changed;
   InodeCalc      inodecalc;
   ConfigBOOL     kernel_permissions_check;
   ConfigBOOL     lazy_umount_mountpoint;

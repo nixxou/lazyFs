@@ -30,6 +30,11 @@
 #include <variant>
 
 
+// Index state of a ROC branch, shared by all copies of one Branch
+// (see branch_index_mgr.hpp).
+struct BranchIndexSlot;
+
+
 class Branch final
 {
 public:
@@ -37,13 +42,15 @@ public:
     {
       RO,
       RW,
-      NC
+      NC,
+      ROC   // RO whose metadata is served from an index
     };
 
 public:
   std::variant<u64,const u64*> _minfreespace;
   Mode mode;
   fs::path path;
+  std::shared_ptr<BranchIndexSlot> index_slot;
 
 public:
   Branch();
@@ -57,6 +64,7 @@ public:
   bool ro(void) const;
   bool nc(void) const;
   bool ro_or_nc(void) const;
+  bool roc(void) const;
 
 public:
   std::string to_string(void) const;

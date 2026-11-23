@@ -18,6 +18,7 @@
 
 #include "fuse_init.hpp"
 
+#include "branch_index_mgr.hpp"
 #include "config.hpp"
 #include "fs_readahead.hpp"
 #include "procfs.hpp"
@@ -189,6 +190,7 @@ FUSE::init(fuse_conn_info_t *conn_)
 {
   procfs::init();
   cfg.readdir.initialize();
+  BranchIndexMgr::refresh(cfg.branches);
 
   ::_want_if_capable(conn_,FUSE_CAP_ASYNC_DIO);
   ::_want_if_capable(conn_,FUSE_CAP_ASYNC_READ,&cfg.async_read);

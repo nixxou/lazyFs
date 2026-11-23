@@ -20,6 +20,7 @@
 
 #include "supported_getdents64.hpp"
 
+#include "fuse_readdir_index.hpp"
 #include "config.hpp"
 #include "dirinfo.hpp"
 #include "error.hpp"
@@ -69,6 +70,13 @@ _concurrent_readdir(ThreadPool          &tp_,
       auto func =
         [&,dirents_]()
         {
+          {
+            int rv;
+            LockGuard lk(mutex);
+            if(ReaddirIndex::fill(branch,rel_dirpath_,names,dirents_,&rv))
+              return rv;
+          }
+
           return ::_readdir(branch.path,
                             rel_dirpath_,
                             names,

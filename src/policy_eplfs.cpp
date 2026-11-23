@@ -19,6 +19,7 @@
 #include "policy_eplfs.hpp"
 
 #include "errno.hpp"
+#include "branch_index_mgr.hpp"
 #include "fs_exists.hpp"
 #include "fs_info.hpp"
 #include "fs_path.hpp"
@@ -52,7 +53,7 @@ _create(const Branches::Ptr  &branches_,
     {
       if(branch.ro_or_nc())
         error_and_continue(error,EROFS);
-      if(!fs::exists(branch.path,fusepath_))
+      if(!fs::exists(branch,fusepath_))
         error_and_continue(error,ENOENT);
       rv = fs::info(branch.path,&info);
       if(rv < 0)
@@ -95,7 +96,7 @@ _action(const Branches::Ptr  &branches_,
     {
       if(branch.ro())
         error_and_continue(error,EROFS);
-      if(!fs::exists(branch.path,fusepath_))
+      if(!fs::exists(branch,fusepath_))
         error_and_continue(error,ENOENT);
       rv = fs::info(branch.path,&info);
       if(rv < 0)
@@ -132,7 +133,7 @@ _search(const Branches::Ptr  &branches_,
   eplfs = std::numeric_limits<u64>::max();
   for(auto &branch : *branches_)
     {
-      if(!fs::exists(branch.path,fusepath_))
+      if(!fs::exists(branch,fusepath_))
         continue;
       rv = fs::statvfs_cache_spaceavail(branch.path,&spaceavail);
       if(rv < 0)

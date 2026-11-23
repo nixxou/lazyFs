@@ -18,6 +18,7 @@
 
 #include "fuse_getxattr.hpp"
 
+#include "branch_index_mgr.hpp"
 #include "config.hpp"
 #include "errno.hpp"
 #include "fs_findallfiles.hpp"
@@ -61,7 +62,15 @@ _getxattr_ctrl_file(Config       &cfg_,
     return -ENOATTR;
 
   key = Config::prune_ctrl_xattr(attrname_);
-  rv = cfg_.get(key,&val);
+  if(key == "index-status")
+    {
+      val = BranchIndexMgr::status(cfg_.branches);
+      rv  = 0;
+    }
+  else
+    {
+      rv = cfg_.get(key,&val);
+    }
   if(rv < 0)
     return rv;
 
@@ -170,6 +179,12 @@ _getxattr(const Policy::Search &searchFunc_,
                                      attrname_,
                                      buf_,
                                      count_);
+
+  {
+    struct stat st;
+    if(BranchIndexMgr::lstat(*branches[0],fusepath_,&st,&rv))
+      return ((rv < 0) ? rv : -ENOATTR);
+  }
 
   return fs::lgetxattr(fullpath,attrname_,buf_,count_);
 }

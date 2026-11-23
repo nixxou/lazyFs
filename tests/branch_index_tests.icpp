@@ -1,0 +1,508 @@
+// Tests for src/branch_index.{hpp,cpp} and its integration
+// (src/branch_index_mgr.{hpp,cpp}). Included from tests.cpp.
+
+#include "branch_index.hpp"
+#include "branch_index_mgr.hpp"
+#include "dirinfo.hpp"
+#include "fuse_dirent.h"
+#include "fuse_dirents.hpp"
+#include "fuse_getattr.hpp"
+#include "fuse_readdir_cor.hpp"
+#include "fuse_readdir_cosr.hpp"
+#include "fuse_readdir_seq.hpp"
+#include "fuse_readlink.hpp"
+
+#include <set>
+
+#include <sys/mount.h>
+
+namespace
+{
+  struct BITree
+  {
+    std::filesystem::path root;
+    std::filesystem::path idxdir;
+    std::filesystem::path mnt;
+    bool                  mounted = false;
+
+    BITree()
+    {
+      char tmpl[] = "/tmp/mergerfs-branch-index-XXXXXX";
+      TEST_ASSERT(::mkdtemp(tmpl) != nullptr);
+      root   = std::filesystem::path(tmpl) / "branch";
+      idxdir = std::filesystem::path(tmpl) / "idx";
+      std::filesystem::create_directories(root);
+      std::filesystem::create_directories(idxdir);
+    }
+
+    ~BITree()
+    {
+      if(mounted)
+        ::umount2(mnt.c_str(),MNT_DETACH);
+      std::filesystem::remove_all(root.parent_path());
+    }
+
+    void
+    file(const std::string &rel_,
+         const std::string &data_ = "x")
+    {
+      std::filesystem::create_directories((root / rel_).parent_path());
+      std::ofstream(root / rel_) << data_;
+    }
+
+    void
+    dir(const std::string &rel_)
+    {
+      std::filesystem::create_directories(root / rel_);
+    }
+
+    void
+    link(const std::string &target_,
+         const std::string &rel_)
+    {
+      TEST_ASSERT(::symlink(target_.c_str(),(root / rel_).c_str()) == 0);
+    }
+
+    // standard tree used by most tests
+    void
+    populate()
+    {
+      file("Films/Brazil.mkv","brazil");
+      file("Films/Alien.mkv","alien!");
+      file("Series/Dune/S01E01.mkv","dune");
+      file("top.txt","top");
+      dir("Empty");
+      link("../Films/Alien.mkv","Series/alien-link");
+      link("Films","films-link");
+    }
+  };
+
+  BranchIndex::Result
+  bi_lookup(const BranchIndex::Index  &idx_,
+            const char                *path_,
+            const BranchIndex::Entry **e_ = nullptr)
+  {
+    const BranchIndex::Entry *e = nullptr;
+    auto rv = idx_.lookup(path_,&e);
+    if(e_)
+      *e_ = e;
+    return rv;
+  }
+
+  std::vector<std::string>
+  bi_names(const BranchIndex::Index         &idx_,
+           std::span<const BranchIndex::Entry>  children_)
+  {
+    std::vector<std::string> v;
+    for(const auto &e : children_)
+      v.emplace_back(idx_.name(e));
+    return v;
+  }
+
+  void
+  bi_check_queries(const BranchIndex::Index &idx_,
+                   const BITree             &t_)
+  {
+    using R = BranchIndex::Result;
+    const BranchIndex::Entry *e;
+    std::span<const BranchIndex::Entry> kids;
+
+    // root in all its spellings
+    TEST_CHECK(bi_lookup(idx_,"",&e) == R::FOUND && S_ISDIR(e->mode));
+    TEST_CHECK(bi_lookup(idx_,"/",&e) == R::FOUND && S_ISDIR(e->mode));
+
+    // positive lookups, with or without slashes
+    TEST_CHECK(bi_lookup(idx_,"Films/Alien.mkv",&e) == R::FOUND);
+    TEST_CHECK(e && idx_.name(*e) == "Alien.mkv" && e->size == 6);
+    TEST_CHECK(bi_lookup(idx_,"/Series/Dune/S01E01.mkv",&e) == R::FOUND);
+    TEST_CHECK(bi_lookup(idx_,"/Series/Dune/",&e) == R::FOUND && S_ISDIR(e->mode));
+    TEST_CHECK(bi_lookup(idx_,"top.txt") == R::FOUND);
+
+    // negatives answered without the filesystem
+    TEST_CHECK(bi_lookup(idx_,"Films/folder.jpg") == R::NOT_FOUND);
+    TEST_CHECK(bi_lookup(idx_,"Films/Alien.mk") == R::NOT_FOUND);
+    TEST_CHECK(bi_lookup(idx_,"Nope/a/b/c") == R::NOT_FOUND);
+    TEST_CHECK(bi_lookup(idx_,"Series/Nope/x") == R::NOT_FOUND);
+    TEST_CHECK(bi_lookup(idx_,"top.txt/x") == R::NOT_DIR);
+    TEST_CHECK(bi_lookup(idx_,"top.txt/x/y") == R::NOT_DIR);
+    TEST_CHECK(bi_lookup(idx_,"Films/Alien.mkv/x") == R::NOT_DIR);
+
+    // listings: contiguous, sorted by name
+    TEST_CHECK(idx_.list("",&kids) == R::FOUND);
+    TEST_CHECK((bi_names(idx_,kids) ==
+                std::vector<std::string>{"Empty","Films","Series","films-link","top.txt"}));
+    TEST_CHECK(idx_.list("/Films/",&kids) == R::FOUND);
+    TEST_CHECK((bi_names(idx_,kids) ==
+                std::vector<std::string>{"Alien.mkv","Brazil.mkv"}));
+    TEST_CHECK(idx_.list("Empty",&kids) == R::FOUND && kids.empty());
+    TEST_CHECK(idx_.list("Nope",&kids) == R::NOT_FOUND);
+    TEST_CHECK(idx_.list("top.txt",&kids) == R::NOT_DIR);
+
+    // symlinks are plain entries, never directories
+    TEST_CHECK(bi_lookup(idx_,"films-link",&e) == R::FOUND && S_ISLNK(e->mode));
+    TEST_CHECK(e && idx_.symlink_target(*e) == "Films");
+    TEST_CHECK(idx_.list("films-link",&kids) == R::LIVE);
+    TEST_CHECK(bi_lookup(idx_,"films-link/Alien.mkv") == R::LIVE);
+    TEST_CHECK(bi_lookup(idx_,"films-link/a/b") == R::LIVE);
+    TEST_CHECK(bi_lookup(idx_,"Series/alien-link",&e) == R::FOUND);
+    TEST_CHECK(e && idx_.symlink_target(*e) == "../Films/Alien.mkv");
+    TEST_CHECK(bi_lookup(idx_,"top.txt",&e) == R::FOUND && idx_.symlink_target(*e).empty());
+
+    // stat fidelity against the real filesystem
+    for(const char *rel : {"","Films","Films/Brazil.mkv","Series/Dune/S01E01.mkv",
+                           "films-link","Empty"})
+      {
+        struct stat real;
+        struct stat got;
+
+        TEST_ASSERT(::lstat((t_.root / rel).c_str(),&real) == 0);
+        TEST_ASSERT(bi_lookup(idx_,rel,&e) == R::FOUND);
+        idx_.to_stat(*e,&got);
+        TEST_CHECK(got.st_ino   == real.st_ino);
+        TEST_CHECK(got.st_mode  == real.st_mode);
+        TEST_CHECK(got.st_nlink == real.st_nlink);
+        TEST_CHECK(got.st_uid   == real.st_uid);
+        TEST_CHECK(got.st_gid   == real.st_gid);
+        TEST_CHECK(got.st_size  == real.st_size);
+        TEST_CHECK(got.st_blocks == real.st_blocks);
+        TEST_CHECK(got.st_mtim.tv_sec  == real.st_mtim.tv_sec);
+        TEST_CHECK(got.st_mtim.tv_nsec == real.st_mtim.tv_nsec);
+        TEST_CHECK(got.st_ctim.tv_sec  == real.st_ctim.tv_sec);
+        TEST_CHECK(got.st_ctim.tv_nsec == real.st_ctim.tv_nsec);
+        TEST_MSG("path: '%s'",rel);
+      }
+  }
+}
+
+static
+void
+test_branch_index_build_and_query()
+{
+  BITree t;
+  std::shared_ptr<BranchIndex::Index> idx;
+
+  t.populate();
+  TEST_ASSERT(BranchIndex::build(t.root,&idx) == 0);
+  TEST_CHECK(!idx->mapped());
+  TEST_CHECK(idx->dirs_count() == 5); // root Films Series Series/Dune Empty
+  TEST_CHECK(idx->entries_count() == 11);
+
+  bi_check_queries(*idx,t);
+}
+
+static
+void
+test_branch_index_signature_deterministic()
+{
+  BITree t;
+  std::shared_ptr<BranchIndex::Index> a;
+  std::shared_ptr<BranchIndex::Index> b;
+  std::shared_ptr<BranchIndex::Index> c;
+
+  t.populate();
+  TEST_ASSERT(BranchIndex::build(t.root,&a) == 0);
+  TEST_ASSERT(BranchIndex::build(t.root,&b) == 0);
+  TEST_CHECK(a->signature() == b->signature());
+
+  t.file("Films/Coraline.mkv");
+  TEST_ASSERT(BranchIndex::build(t.root,&c) == 0);
+  TEST_CHECK(a->signature() != c->signature());
+}
+
+static
+void
+test_branch_index_save_load_roundtrip()
+{
+  BITree t;
+  bool written;
+  std::string file;
+  std::shared_ptr<BranchIndex::Index> built;
+  std::shared_ptr<BranchIndex::Index> loaded;
+
+  t.populate();
+  TEST_ASSERT(BranchIndex::build(t.root,&built) == 0);
+
+  file = (t.idxdir / BranchIndex::filename(t.root)).string();
+  TEST_CHECK(file.size() > 4 && file.ends_with(".idx"));
+  TEST_ASSERT(BranchIndex::save(*built,file,true,&written) == 0);
+  TEST_CHECK(written);
+  TEST_CHECK(std::filesystem::file_size(file) == built->byte_size());
+
+  TEST_ASSERT(BranchIndex::load(file,&loaded) == 0);
+  TEST_CHECK(loaded->mapped());
+  TEST_CHECK(loaded->signature() == built->signature());
+  TEST_CHECK(loaded->fsid() == built->fsid());
+  TEST_CHECK(loaded->entries_count() == built->entries_count());
+  loaded->set_dev(built->dev());
+
+  bi_check_queries(*loaded,t);
+
+  // no temporary file left behind
+  size_t n = 0;
+  for(const auto &de : std::filesystem::directory_iterator(t.idxdir))
+    n += (de.path().string().find(".tmp.") == std::string::npos);
+  TEST_CHECK(n == 1);
+}
+
+static
+void
+test_branch_index_write_if_changed()
+{
+  BITree t;
+  bool written;
+  std::string file;
+  struct stat st1;
+  struct stat st2;
+  std::shared_ptr<BranchIndex::Index> a;
+  std::shared_ptr<BranchIndex::Index> b;
+
+  t.populate();
+  file = (t.idxdir / "branch.idx").string();
+
+  TEST_ASSERT(BranchIndex::build(t.root,&a) == 0);
+  TEST_ASSERT(BranchIndex::save(*a,file,true,&written) == 0);
+  TEST_CHECK(written);
+  TEST_ASSERT(::stat(file.c_str(),&st1) == 0);
+
+  // same content: file untouched (same inode, no rewrite)
+  TEST_ASSERT(BranchIndex::build(t.root,&b) == 0);
+  TEST_ASSERT(BranchIndex::save(*b,file,true,&written) == 0);
+  TEST_CHECK(!written);
+  TEST_ASSERT(::stat(file.c_str(),&st2) == 0);
+  TEST_CHECK(st1.st_ino == st2.st_ino);
+
+  // option disabled: always rewritten
+  TEST_ASSERT(BranchIndex::save(*b,file,false,&written) == 0);
+  TEST_CHECK(written);
+  TEST_ASSERT(::stat(file.c_str(),&st2) == 0);
+  TEST_CHECK(st1.st_ino != st2.st_ino);
+
+  // content changed: rewritten
+  t.file("Series/Dune/S01E02.mkv");
+  TEST_ASSERT(BranchIndex::build(t.root,&b) == 0);
+  TEST_ASSERT(BranchIndex::save(*b,file,true,&written) == 0);
+  TEST_CHECK(written);
+}
+
+static
+void
+test_branch_index_load_rejects_damage()
+{
+  BITree t;
+  std::string file;
+  std::string data;
+  std::shared_ptr<BranchIndex::Index> idx;
+  std::shared_ptr<BranchIndex::Index> loaded;
+
+  t.populate();
+  file = (t.idxdir / "branch.idx").string();
+  TEST_ASSERT(BranchIndex::build(t.root,&idx) == 0);
+  TEST_ASSERT(BranchIndex::save(*idx,file,false,nullptr) == 0);
+
+  {
+    std::ifstream in(file,std::ios::binary);
+    data.assign(std::istreambuf_iterator<char>(in),{});
+  }
+  auto write_variant = [&](const std::string &d_)
+  {
+    std::ofstream(file,std::ios::binary|std::ios::trunc) << d_;
+  };
+
+  BranchIndex::Header h;
+  ::memcpy(&h,data.data(),sizeof(h));
+
+  // a flipped byte anywhere in the payload breaks the signature:
+  // first entry, a dir record, last byte of the names
+  for(size_t off : {(size_t)h.entries.off + 3,
+                    (size_t)h.dirs.off + 1,
+                    (size_t)(h.names.off + h.names.size - 1)})
+    {
+      std::string d = data;
+      d[off] ^= 0x40;
+      write_variant(d);
+      TEST_CHECK(BranchIndex::load(file,&loaded) == -EBADMSG);
+      TEST_MSG("offset %zu",off);
+    }
+
+  // an occupied hash slot set to "empty" makes a directory invisible:
+  // must be rejected as well
+  {
+    std::string d = data;
+    bool zeroed = false;
+    for(uint64_t i = 0; i < h.hash_count; i++)
+      {
+        uint32_t v;
+        size_t off = h.hash.off + (i * sizeof(uint32_t));
+        ::memcpy(&v,&d[off],sizeof(v));
+        if(v == 0)
+          continue;
+        v = 0;
+        ::memcpy(&d[off],&v,sizeof(v));
+        zeroed = true;
+        break;
+      }
+    TEST_ASSERT(zeroed);
+    write_variant(d);
+    TEST_CHECK(BranchIndex::load(file,&loaded) == -EBADMSG);
+  }
+
+  // truncated, empty and garbage files
+  write_variant(data.substr(0,data.size() / 2));
+  TEST_CHECK(BranchIndex::load(file,&loaded) == -EBADMSG);
+  write_variant(data.substr(0,100));
+  TEST_CHECK(BranchIndex::load(file,&loaded) == -EBADMSG);
+  write_variant(std::string(8192,'z'));
+  TEST_CHECK(BranchIndex::load(file,&loaded) == -EBADMSG);
+
+  // intact again: loads
+  write_variant(data);
+  TEST_CHECK(BranchIndex::load(file,&loaded) == 0);
+
+  TEST_CHECK(BranchIndex::load((t.idxdir / "missing.idx").string(),&loaded) == -ENOENT);
+}
+
+static
+void
+test_branch_index_many_dirs()
+{
+  BITree t;
+  std::shared_ptr<BranchIndex::Index> idx;
+  std::span<const BranchIndex::Entry> kids;
+
+  // enough directories to exercise hash collisions and probing
+  for(int i = 0; i < 600; i++)
+    t.dir("d" + std::to_string(i % 20) + "/sub" + std::to_string(i));
+  t.file("d3/sub3/leaf");
+
+  TEST_ASSERT(BranchIndex::build(t.root,&idx) == 0);
+  TEST_CHECK(idx->dirs_count() == 1 + 20 + 600);
+
+  for(int i = 0; i < 600; i++)
+    {
+      std::string p = "d" + std::to_string(i % 20) + "/sub" + std::to_string(i);
+      TEST_CHECK(idx->list(p,&kids) == BranchIndex::Result::FOUND);
+      TEST_MSG("path: %s",p.c_str());
+    }
+  TEST_CHECK(idx->list("d3/sub3",&kids) == BranchIndex::Result::FOUND && kids.size() == 1);
+  TEST_CHECK(idx->list("d3/sub4",&kids) == BranchIndex::Result::NOT_FOUND);
+  TEST_CHECK(idx->list("d20",&kids) == BranchIndex::Result::NOT_FOUND);
+}
+
+static
+void
+test_branch_index_nested_mount_is_live()
+{
+  using R = BranchIndex::Result;
+  BITree t;
+  const BranchIndex::Entry *e;
+  std::span<const BranchIndex::Entry> kids;
+  std::shared_ptr<BranchIndex::Index> idx;
+
+  t.populate();
+  t.mnt = t.root / "Backup";
+  t.dir("Backup");
+  if(::mount("tmpfs",t.mnt.c_str(),"tmpfs",0,nullptr) != 0)
+    {
+      TEST_SKIP("cannot mount tmpfs here (errno %d)",errno);
+      return;
+    }
+  t.mounted = true;
+  t.file("Backup/photos/2024/img.jpg");
+
+  TEST_ASSERT(BranchIndex::build(t.root,&idx) == 0);
+
+  // nothing indexed under the mount point
+  TEST_CHECK(bi_lookup(*idx,"Backup") == R::LIVE);
+  TEST_CHECK(idx->list("Backup",&kids) == R::LIVE);
+  TEST_CHECK(bi_lookup(*idx,"Backup/photos") == R::LIVE);
+  TEST_CHECK(bi_lookup(*idx,"Backup/photos/2024/img.jpg") == R::LIVE);
+  TEST_CHECK(bi_lookup(*idx,"Backup/missing/deep/file") == R::LIVE);
+  TEST_CHECK(idx->list("Backup/photos/2024",&kids) == R::LIVE);
+
+  // the rest of the branch still answers from the index
+  TEST_CHECK(bi_lookup(*idx,"Films/Alien.mkv",&e) == R::FOUND);
+  TEST_CHECK(bi_lookup(*idx,"Films/folder.jpg") == R::NOT_FOUND);
+  TEST_CHECK(idx->list("",&kids) == R::FOUND && kids.size() == 6);
+}
+
+static
+void
+test_branch_index_mlock()
+{
+  BITree t;
+  int64_t rv;
+  std::string file;
+  std::shared_ptr<BranchIndex::Index> idx;
+  std::shared_ptr<BranchIndex::Index> loaded;
+
+  t.populate();
+  file = (t.idxdir / "branch.idx").string();
+  TEST_ASSERT(BranchIndex::build(t.root,&idx) == 0);
+
+  // only a mapped index can be locked
+  TEST_CHECK(idx->mlock(1 << 20) == -EINVAL);
+
+  TEST_ASSERT(BranchIndex::save(*idx,file,false,nullptr) == 0);
+  TEST_ASSERT(BranchIndex::load(file,&loaded) == 0);
+
+  rv = loaded->mlock(BranchIndex::HEADER_SIZE + 10);
+  if((rv == -EPERM) || (rv == -ENOMEM) || (rv == -ENOSYS))
+    {
+      TEST_SKIP("mlock not permitted here (%lld)",(long long)rv);
+      return;
+    }
+  TEST_CHECK(rv == (int64_t)BranchIndex::HEADER_SIZE + 10);
+
+  rv = loaded->mlock(1ULL << 30);
+  TEST_CHECK(rv > 0 && (uint64_t)rv <= loaded->byte_size());
+
+  bi_check_queries(*loaded,t);
+}
+
+static
+void
+test_branch_index_mountinfo()
+{
+  BITree t;
+  std::shared_ptr<BranchIndex::Index> idx;
+  const fs::path mi = t.idxdir / "mountinfo";
+
+  t.populate();
+  t.file("Films/bound.mkv","b");
+  t.dir("Films/bound-dir/sub");
+  t.file("Films/bound-dir/sub/x","x");
+  t.dir("with space");
+
+  // a file bind mount and a same device directory bind mount below the
+  // branch, one with an escaped space, plus unrelated mounts
+  {
+    const std::string r = t.root.string();
+    std::ofstream o(mi);
+    o << "20 1 8:1 / / rw - ext4 /dev/sda1 rw\n";
+    o << "30 20 8:1 /x " << r << "/Films/bound.mkv rw - ext4 /dev/sda1 rw\n";
+    o << "31 20 8:1 /y " << r << "/Films/bound-dir rw - ext4 /dev/sda1 rw\n";
+    o << "32 20 0:5 / " << r << "/with\\040space rw - tmpfs tmpfs rw\n";
+    o << "33 20 8:1 / " << r << " rw - ext4 /dev/sda1 rw\n";
+    o << "34 20 8:1 / " << r << "2/Films rw - ext4 /dev/sda1 rw\n";
+  }
+
+  auto mps = BranchIndex::mountpoints_below(t.root.string(),mi.string());
+  std::sort(mps.begin(),mps.end());
+  TEST_CHECK((mps == std::vector<std::string>{"Films/bound-dir",
+                                              "Films/bound.mkv",
+                                              "with space"}));
+
+  TEST_ASSERT(BranchIndex::build(t.root,&idx,mi.string()) == 0);
+
+  using R = BranchIndex::Result;
+  std::span<const BranchIndex::Entry> kids;
+  TEST_CHECK(bi_lookup(*idx,"Films/bound.mkv") == R::LIVE);
+  TEST_CHECK(bi_lookup(*idx,"Films/bound-dir") == R::LIVE);
+  TEST_CHECK(bi_lookup(*idx,"Films/bound-dir/sub/x") == R::LIVE);
+  TEST_CHECK(idx->list("Films/bound-dir",&kids) == R::LIVE);
+  TEST_CHECK(bi_lookup(*idx,"with space/anything") == R::LIVE);
+  // neighbours still indexed, mount points still listed by name
+  TEST_CHECK(bi_lookup(*idx,"Films/Alien.mkv") == R::FOUND);
+  TEST_CHECK(idx->list("Films",&kids) == R::FOUND);
+  TEST_CHECK(bi_names(*idx,kids).size() == 4);
+}

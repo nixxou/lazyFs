@@ -18,6 +18,7 @@
 
 #include "fuse_getattr.hpp"
 
+#include "branch_index_mgr.hpp"
 #include "config.hpp"
 #include "errno.hpp"
 #include "fs_fstat.hpp"
@@ -144,6 +145,14 @@ _getattr(const Policy::Search &searchFunc_,
     return rv;
   if(branches.empty())
     return -ENOENT;
+
+  if(BranchIndexMgr::lstat(*branches[0],fusepath_,st_,&rv))
+    {
+      if(rv < 0)
+        return rv;
+      fs::inode::calc(branches[0]->path,fusepath_,st_);
+      return 0;
+    }
 
   fullpath = branches[0]->path / fusepath_;
 

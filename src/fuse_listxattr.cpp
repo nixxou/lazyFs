@@ -18,6 +18,7 @@
 
 #include "fuse_listxattr.hpp"
 
+#include "branch_index_mgr.hpp"
 #include "config.hpp"
 #include "errno.hpp"
 #include "fs_llistxattr.hpp"
@@ -49,6 +50,22 @@ _listxattr_size(const std::vector<Branch*> &branches_,
   for(const auto branch : branches_)
     {
       ssize_t rv;
+
+      {
+        int irv;
+        struct stat st;
+        if(BranchIndexMgr::lstat(*branch,fusepath_,&st,&irv))
+          {
+            if(irv < 0)
+              {
+                if(err == -ENOENT)
+                  err = irv;
+                continue;
+              }
+            success = true;
+            continue;
+          }
+      }
 
       fullpath = branch->path / fusepath_;
 
@@ -91,6 +108,22 @@ _listxattr(const std::vector<Branch*> &branches_,
   success = false;
   for(const auto branch : branches_)
     {
+      {
+        int irv;
+        struct stat st;
+        if(BranchIndexMgr::lstat(*branch,fusepath_,&st,&irv))
+          {
+            if(irv < 0)
+              {
+                if(err == -ENOENT)
+                  err = irv;
+                continue;
+              }
+            success = true;
+            continue;
+          }
+      }
+
       fullpath = branch->path / fusepath_;
 
       rv = fs::llistxattr(fullpath,list_,size_);

@@ -4251,6 +4251,9 @@ test_clonepath_modes()
   std::filesystem::remove_all(root);
 }
 
+#include "branch_index_tests.icpp"
+#include "branch_index_integration_tests.icpp"
+
 TEST_LIST =
   {
    {"nop",test_nop},
@@ -4447,5 +4450,23 @@ TEST_LIST =
    {"tp_heavy_enqueue_task_mixed_outcomes",test_tp_heavy_enqueue_task_mixed_outcomes},
    {"tp_heavy_add_remove_churn_under_enqueue",test_tp_heavy_add_remove_churn_under_enqueue},
    {"clonepath_modes",test_clonepath_modes},
+   {"branch_index_build_and_query",test_branch_index_build_and_query},
+   {"branch_index_signature_deterministic",test_branch_index_signature_deterministic},
+   {"branch_index_save_load_roundtrip",test_branch_index_save_load_roundtrip},
+   {"branch_index_write_if_changed",test_branch_index_write_if_changed},
+   {"branch_index_load_rejects_damage",test_branch_index_load_rejects_damage},
+   {"branch_index_many_dirs",test_branch_index_many_dirs},
+   {"branch_index_nested_mount_is_live",test_branch_index_nested_mount_is_live},
+   {"branch_index_mlock",test_branch_index_mlock},
+   {"branch_index_mountinfo",test_branch_index_mountinfo},
+   {"branch_index_roc_mode",test_branch_index_roc_mode},
+   {"branch_index_roc_pool",test_branch_index_roc_pool},
+   {"branch_index_roc_load_without_scan",test_branch_index_roc_load_without_scan},
+   {"branch_index_roc_glob",test_branch_index_roc_glob},
+   {"branch_index_roc_rescan_race",test_branch_index_roc_rescan_race},
+   {"branch_index_roc_repairs_damaged_file",test_branch_index_roc_repairs_damaged_file},
+   {"branch_index_filename_per_branch",test_branch_index_filename_per_branch},
+   {"branch_index_disk_key_sysfs",test_branch_index_disk_key_sysfs},
+   {"branch_index_one_scan_per_disk",test_branch_index_one_scan_per_disk},
    {NULL,NULL}
   };

@@ -18,6 +18,7 @@
 
 #include "fuse_setxattr.hpp"
 
+#include "branch_index_mgr.hpp"
 #include "config.hpp"
 #include "errno.hpp"
 #include "fs_glob.hpp"
@@ -55,6 +56,8 @@ _setxattr_cmd_xattr(const std::string_view &attrname_,
     return (fuse_gc1(),0);
   if(cmd == "invalidate-all-nodes")
     return (fuse_invalidate_all_nodes(),0);
+  if(cmd == "index-rescan")
+    return BranchIndexMgr::rescan(cfg.branches,attrval_);
 
   return -ENOATTR;
 }
@@ -96,6 +99,7 @@ _setxattr_ctrl_file(const char *attrname_,
     return rv;
 
   fs::statvfs_cache_timeout(cfg.cache_statfs);
+  BranchIndexMgr::refresh(cfg.branches);
 
   return rv;
 }

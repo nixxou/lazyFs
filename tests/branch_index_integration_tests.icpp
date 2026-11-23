@@ -1,0 +1,556 @@
+// Integration of the branch index (ROC branches) with mergerfs
+// operations. Included from tests.cpp after branch_index_tests.icpp.
+
+#include "dirinfo.hpp"
+#include "fuse_dirent.h"
+#include "fuse_dirents.hpp"
+#include "fuse_getattr.hpp"
+#include "fuse_readdir_cor.hpp"
+#include "fuse_readdir_cosr.hpp"
+#include "fuse_readdir_seq.hpp"
+#include "fuse_readlink.hpp"
+
+#include <map>
+#include <set>
+
+#include <sys/sysmacros.h>
+
+namespace
+{
+  // Saves and restores every option the tests touch.
+  struct BICfgGuard
+  {
+    std::vector<std::pair<ToFromString*,std::string>> saved;
+    const u64  old_minfreespace = cfg.branches.minfreespace;
+    const bool old_posix_acl    = cfg.posix_acl;
+
+    BICfgGuard()
+    {
+      for(ToFromString *o : std::vector<ToFromString*>{&cfg.branches,
+                                                       &cfg.func.getattr,
+                                                       &cfg.func.readlink,
+                                                       &cfg.follow_symlinks,
+                                                       &cfg.symlinkify,
+                                                       &cfg.index_path,
+                                                       &cfg.index_write_if_changed,
+                                                       &cfg.index_mlock})
+        saved.emplace_back(o,o->to_string());
+    }
+
+    ~BICfgGuard()
+    {
+      cfg.branches.minfreespace = old_minfreespace;
+      cfg.posix_acl = old_posix_acl;
+      for(auto &o : saved)
+        o.first->from_string(o.second);
+    }
+  };
+
+  // A two branch pool: a BITree in mode ROC (indexed) followed by a
+  // plain writable directory (never indexed).
+  struct BIPool
+  {
+    BICfgGuard guard;
+    BITree     t;
+    fs::path   rw;
+
+    BIPool()
+    {
+      t.populate();
+      rw = t.root.parent_path() / "rw";
+      std::filesystem::create_directories(rw / "Films");
+      std::ofstream(rw / "Films" / "Extra.mkv") << "extra";
+      std::ofstream(rw / "rwonly.txt") << "rw";
+
+      cfg.branches.minfreespace = 0;
+      cfg.func.getattr.from_string("ff");
+      cfg.func.readlink.from_string("ff");
+      cfg.follow_symlinks.from_string("never");
+      cfg.symlinkify             = false;
+      cfg.posix_acl              = false;
+      cfg.index_path             = t.idxdir.string();
+      cfg.index_write_if_changed = true;
+      cfg.index_mlock            = 0;
+      set_branches(t.root.string() + "=ROC:" + rw.string());
+    }
+
+    void
+    set_branches(const std::string &s_)
+    {
+      TEST_ASSERT(cfg.branches.from_string(s_) == 0);
+    }
+
+    std::shared_ptr<BranchIndexSlot>
+    slot(const size_t i_)
+    {
+      Branches::Ptr b = cfg.branches;
+      return (*b)[i_].index_slot;
+    }
+
+    int
+    state(const size_t i_)
+    {
+      return slot(i_)->state.load();
+    }
+
+    bool
+    wait_ready(const size_t i_)
+    {
+      for(int n = 0; n < 2000; n++)
+        {
+          int s = state(i_);
+          if(s == BranchIndexSlot::READY)
+            return true;
+          if(s == BranchIndexSlot::FAILED)
+            return false;
+          std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+      return false;
+    }
+
+    fs::path
+    index_file(const fs::path &branch_)
+    {
+      return (t.idxdir / BranchIndex::filename(branch_));
+    }
+  };
+
+  fuse_req_ctx_t
+  bi_ctx()
+  {
+    fuse_req_ctx_t ctx = {};
+    ctx.uid = ::geteuid();
+    ctx.gid = ::getegid();
+    ctx.pid = ::getpid();
+    return ctx;
+  }
+
+  std::set<std::string>
+  bi_readdir(FUSE::ReadDirBase &rd_,
+             const char        *path_)
+  {
+    int rv;
+    std::set<std::string> names;
+    fuse_dirents_t d;
+    DirInfo di(path_);
+    fuse_file_info_t ffi = {};
+    fuse_req_ctx_t ctx = bi_ctx();
+
+    fuse_dirents_init(&d);
+    ffi.fh = di.to_fh();
+    rv = rd_(&ctx,&ffi,&d);
+    if(rv < 0)
+      names.insert("<error " + std::to_string(rv) + ">");
+    else
+      // offs[i] is where entry i starts (offs[0] = 0), the last
+      // element is the end of the data
+      for(size_t i = 0; (i + 1) < kv_size(d.offs); i++)
+        {
+          auto *e = reinterpret_cast<fuse_dirent_t*>(&kv_A(d.data,kv_A(d.offs,i)));
+          names.emplace(e->name,e->namelen);
+        }
+    fuse_dirents_free(&d);
+
+    return names;
+  }
+
+  struct BIStat
+  {
+    int rv;
+    struct stat st;
+  };
+
+  BIStat
+  bi_getattr(const char *path_)
+  {
+    BIStat r{};
+    fuse_timeouts_t to{};
+    fuse_req_ctx_t ctx = bi_ctx();
+
+    r.rv = FUSE::getattr(&ctx,path_,&r.st,&to);
+
+    return r;
+  }
+}
+
+static
+void
+test_branch_index_roc_mode()
+{
+  BICfgGuard guard;
+  BITree t;
+
+  t.dir("a");
+  t.dir("b");
+  cfg.branches.minfreespace = 0;
+  TEST_ASSERT(cfg.branches.from_string((t.root / "a").string() + "=ROC:" +
+                                       (t.root / "b").string() + "=RO") == 0);
+
+  Branches::Ptr b = cfg.branches;
+  TEST_CHECK((*b)[0].mode == Branch::Mode::ROC);
+  TEST_CHECK((*b)[0].roc() && (*b)[0].ro() && (*b)[0].ro_or_nc());
+  TEST_CHECK(!(*b)[1].roc() && (*b)[1].ro());
+  TEST_CHECK((*b)[0].to_string().ends_with("=ROC"));
+  TEST_CHECK(cfg.branches.to_string().find("=ROC") != std::string::npos);
+
+  // round trip
+  TEST_ASSERT(cfg.branches.from_string(cfg.branches.to_string()) == 0);
+  b = cfg.branches;
+  TEST_CHECK((*b)[0].mode == Branch::Mode::ROC);
+}
+
+static
+void
+test_branch_index_roc_pool()
+{
+  BIPool p;
+  FUSE::ReadDirSeq  seq;
+  FUSE::ReadDirCOSR cosr(2,8);
+  FUSE::ReadDirCOR  cor(2,8);
+  std::vector<FUSE::ReadDirBase*> readdirs{&seq,&cosr,&cor};
+  const std::set<std::string> films = {".","..","Alien.mkv","Brazil.mkv","Extra.mkv"};
+
+  // reference answers straight from the branches: nothing indexed yet
+  TEST_CHECK(p.state(0) == BranchIndexSlot::IDLE);
+  std::map<std::string,BIStat> live;
+  for(const char *path : {"","Films","Films/Alien.mkv","Films/Extra.mkv",
+                          "Series/Dune/S01E01.mkv","films-link","rwonly.txt",
+                          "Empty"})
+    live[path] = bi_getattr(path);
+  std::map<std::string,std::set<std::string>> live_dirs;
+  for(const char *path : {"","Films","Empty","Series"})
+    live_dirs[path] = bi_readdir(seq,path);
+
+  BranchIndexMgr::refresh(cfg.branches);
+  TEST_ASSERT(p.wait_ready(0));
+  TEST_CHECK(p.state(1) == BranchIndexSlot::INELIGIBLE);
+  TEST_CHECK(std::filesystem::exists(p.index_file(p.t.root)));
+  TEST_CHECK(BranchIndexMgr::status(cfg.branches).find(p.t.root.string() + ": ready") != std::string::npos);
+
+  // getattr through mergerfs: identical to the live answers
+  for(const auto &[path,ref] : live)
+    {
+      BIStat got = bi_getattr(path.c_str());
+      TEST_CHECK(got.rv == ref.rv);
+      TEST_CHECK(got.st.st_ino   == ref.st.st_ino);
+      TEST_CHECK(got.st.st_dev   == ref.st.st_dev);
+      TEST_CHECK(got.st.st_mode  == ref.st.st_mode);
+      TEST_CHECK(got.st.st_nlink == ref.st.st_nlink);
+      TEST_CHECK(got.st.st_size  == ref.st.st_size);
+      TEST_CHECK(got.st.st_mtim.tv_sec  == ref.st.st_mtim.tv_sec);
+      TEST_CHECK(got.st.st_mtim.tv_nsec == ref.st.st_mtim.tv_nsec);
+      TEST_MSG("path: '%s'",path.c_str());
+    }
+  TEST_CHECK(bi_getattr("Films/folder.jpg").rv == -ENOENT);
+  TEST_CHECK(bi_getattr("top.txt/x").rv == -ENOENT);
+
+  // readlink served from the index
+  {
+    char buf[64];
+    fuse_req_ctx_t ctx = bi_ctx();
+    ssize_t rv = FUSE::readlink(&ctx,"films-link",buf,sizeof(buf));
+    TEST_CHECK(rv == 5 && std::string(buf,5) == "Films");
+  }
+
+  // every readdir implementation gives the same listing as the
+  // filesystem, index and live branch merged
+  TEST_CHECK(live_dirs["Films"] == films);
+  for(auto *rd : readdirs)
+    for(const auto &[path,ref] : live_dirs)
+      {
+        TEST_CHECK(bi_readdir(*rd,path.c_str()) == ref);
+        TEST_MSG("dir: '%s'",path.c_str());
+      }
+
+  // ROC is read-only for mergerfs: action policies refuse it
+  {
+    std::vector<Branch*> out;
+    TEST_CHECK(Policies::Action::epff(cfg.branches,"top.txt",out) == -EROFS);
+    out.clear();
+    TEST_CHECK(Policies::Action::epff(cfg.branches,"rwonly.txt",out) == 0);
+  }
+
+  // The index is trusted: a file added behind mergerfs' back stays
+  // invisible until a rescan.
+  std::ofstream(p.t.root / "Films" / "Sneaky.mkv") << "sneaky";
+  TEST_CHECK(bi_getattr("Films/Sneaky.mkv").rv == -ENOENT);
+  for(auto *rd : readdirs)
+    TEST_CHECK(bi_readdir(*rd,"Films").count("Sneaky.mkv") == 0);
+
+  TEST_CHECK(BranchIndexMgr::rescan(cfg.branches,"/no/such/branch") == -ENOENT);
+  TEST_CHECK(BranchIndexMgr::rescan(cfg.branches,p.rw.string()) == -ENOENT);
+  TEST_CHECK(BranchIndexMgr::rescan(cfg.branches,p.t.root.string()) == 0);
+  TEST_ASSERT(p.wait_ready(0));
+  TEST_CHECK(bi_getattr("Films/Sneaky.mkv").rv == 0);
+  for(auto *rd : readdirs)
+    TEST_CHECK(bi_readdir(*rd,"Films").count("Sneaky.mkv") == 1);
+
+  // incompatible options bypass the index right away
+  std::ofstream(p.t.root / "Films" / "Sneaky2.mkv") << "x";
+  TEST_CHECK(bi_getattr("Films/Sneaky2.mkv").rv == -ENOENT);
+  cfg.follow_symlinks.from_string("directory");
+  TEST_CHECK(bi_getattr("Films/Sneaky2.mkv").rv == 0);
+  cfg.follow_symlinks.from_string("never");
+  TEST_CHECK(bi_getattr("Films/Sneaky2.mkv").rv == -ENOENT);
+
+  // ACLs are not indexed: no index while posix-acl is on
+  cfg.posix_acl = true;
+  TEST_CHECK(bi_getattr("Films/Sneaky2.mkv").rv == 0);
+  BranchIndexMgr::refresh(cfg.branches);
+  TEST_CHECK(p.state(0) == BranchIndexSlot::INELIGIBLE);
+  cfg.posix_acl = false;
+
+  // a branch switched away from ROC loses its index
+  BranchIndexMgr::refresh(cfg.branches);
+  TEST_ASSERT(p.wait_ready(0));
+  p.set_branches(p.t.root.string() + "=RO:" + p.rw.string());
+  BranchIndexMgr::refresh(cfg.branches);
+  TEST_CHECK(p.state(0) == BranchIndexSlot::INELIGIBLE);
+  TEST_CHECK(bi_getattr("Films/Sneaky2.mkv").rv == 0);
+}
+
+static
+void
+test_branch_index_roc_load_without_scan()
+{
+  BIPool p;
+
+  BranchIndexMgr::refresh(cfg.branches);
+  TEST_ASSERT(p.wait_ready(0));
+  TEST_ASSERT(std::filesystem::exists(p.index_file(p.t.root)));
+
+  // "remount": fresh branches, so fresh slots. The existing file is
+  // used as is, without scanning: a change made meanwhile is not seen.
+  std::ofstream(p.t.root / "Films" / "Sneaky.mkv") << "sneaky";
+  p.set_branches(p.t.root.string() + "=ROC:" + p.rw.string());
+  TEST_CHECK(p.state(0) == BranchIndexSlot::IDLE);
+  BranchIndexMgr::refresh(cfg.branches);
+  TEST_ASSERT(p.wait_ready(0));
+  TEST_CHECK(bi_getattr("Films/Sneaky.mkv").rv == -ENOENT);
+  TEST_CHECK(bi_getattr("Films/Alien.mkv").rv == 0);
+  TEST_CHECK(BranchIndexMgr::status(cfg.branches).find("mapped") != std::string::npos);
+
+  // only an explicit rescan looks at the branch again
+  TEST_CHECK(BranchIndexMgr::rescan(cfg.branches,"all") == 0);
+  TEST_ASSERT(p.wait_ready(0));
+  TEST_CHECK(bi_getattr("Films/Sneaky.mkv").rv == 0);
+
+  // without index.path nothing persists: every mount scans
+  cfg.index_path = "";
+  std::ofstream(p.t.root / "Films" / "Sneaky2.mkv") << "x";
+  p.set_branches(p.t.root.string() + "=ROC:" + p.rw.string());
+  BranchIndexMgr::refresh(cfg.branches);
+  TEST_ASSERT(p.wait_ready(0));
+  TEST_CHECK(bi_getattr("Films/Sneaky2.mkv").rv == 0);
+  TEST_CHECK(BranchIndexMgr::status(cfg.branches).find("memory") != std::string::npos);
+}
+
+static
+void
+test_branch_index_roc_glob()
+{
+  BIPool p;
+
+  p.t.file("g1/one.txt","1");
+  p.t.file("g2/two.txt","22");
+  p.t.file("g3/three.txt","333");
+  p.set_branches((p.t.root / "g*").string() + "=ROC");
+
+  Branches::Ptr b = cfg.branches;
+  TEST_ASSERT(b->size() == 3);
+  // one index per expanded path
+  TEST_CHECK((*b)[0].index_slot != (*b)[1].index_slot);
+  TEST_CHECK((*b)[1].index_slot != (*b)[2].index_slot);
+
+  BranchIndexMgr::refresh(cfg.branches);
+  for(size_t i = 0; i < 3; i++)
+    TEST_CHECK(p.wait_ready(i));
+
+  TEST_CHECK(bi_getattr("one.txt").rv == 0);
+  TEST_CHECK(bi_getattr("two.txt").st.st_size == 2);
+  TEST_CHECK(bi_getattr("three.txt").st.st_size == 3);
+  TEST_CHECK(bi_getattr("four.txt").rv == -ENOENT);
+
+  // one file each
+  std::set<std::string> files;
+  for(size_t i = 0; i < 3; i++)
+    files.insert(BranchIndex::filename((*b)[i].path));
+  TEST_CHECK(files.size() == 3);
+}
+
+static
+void
+test_branch_index_roc_rescan_race()
+{
+  BIPool p;
+
+  BranchIndexMgr::refresh(cfg.branches);
+  TEST_ASSERT(p.wait_ready(0));
+
+  // rescans requested while earlier ones are queued or running: only
+  // the last generation may publish
+  for(int i = 0; i < 25; i++)
+    {
+      std::ofstream(p.t.root / ("burst" + std::to_string(i))) << "x";
+      TEST_CHECK(BranchIndexMgr::rescan(cfg.branches,"all") == 0);
+    }
+  TEST_ASSERT(p.wait_ready(0));
+
+  auto slot = p.slot(0);
+  TEST_CHECK(slot->published_gen.load() == slot->gen.load());
+  TEST_CHECK(bi_getattr("burst24").rv == 0);
+}
+
+static
+void
+test_branch_index_roc_repairs_damaged_file()
+{
+  BIPool p;
+  std::string data;
+  BranchIndex::Header h;
+  std::shared_ptr<BranchIndex::Index> loaded;
+
+  BranchIndexMgr::refresh(cfg.branches);
+  TEST_ASSERT(p.wait_ready(0));
+
+  const fs::path file = p.index_file(p.t.root);
+  {
+    std::ifstream in(file,std::ios::binary);
+    data.assign(std::istreambuf_iterator<char>(in),{});
+  }
+  ::memcpy(&h,data.data(),sizeof(h));
+
+  // empty an occupied hash slot: the header still holds the right
+  // signature, only the content is damaged
+  for(uint64_t i = 0; i < h.hash_count; i++)
+    {
+      uint32_t v;
+      size_t off = h.hash.off + (i * sizeof(uint32_t));
+      ::memcpy(&v,&data[off],sizeof(v));
+      if(v == 0)
+        continue;
+      v = 0;
+      ::memcpy(&data[off],&v,sizeof(v));
+      break;
+    }
+  std::ofstream(file,std::ios::binary|std::ios::trunc) << data;
+  TEST_CHECK(BranchIndex::load(file,&loaded) == -EBADMSG);
+
+  // next mount: rejected, rescanned and rewritten despite
+  // write-if-changed
+  p.set_branches(p.t.root.string() + "=ROC:" + p.rw.string());
+  BranchIndexMgr::refresh(cfg.branches);
+  TEST_ASSERT(p.wait_ready(0));
+  TEST_CHECK(BranchIndex::load(file,&loaded) == 0);
+  TEST_CHECK(BranchIndexMgr::status(cfg.branches).find("mapped") != std::string::npos);
+  TEST_CHECK(bi_getattr("Series/Dune/S01E01.mkv").rv == 0);
+}
+
+static
+void
+test_branch_index_filename_per_branch()
+{
+  BITree t;
+
+  t.dir("a");
+  t.dir("b");
+
+  // same filesystem, different branches: different files
+  TEST_CHECK(BranchIndex::filename(t.root / "a") !=
+             BranchIndex::filename(t.root / "b"));
+  // spelling of the same branch does not matter
+  TEST_CHECK(BranchIndex::filename((t.root / "a").string() + "/") ==
+             BranchIndex::filename(t.root / "a"));
+  TEST_CHECK(BranchIndex::filename((t.root / "b" / ".." / "a").string()) ==
+             BranchIndex::filename(t.root / "a"));
+}
+
+static
+void
+test_branch_index_disk_key_sysfs()
+{
+  BITree t;
+  const fs::path sys = t.root / "sys";
+  auto mk = [&](const fs::path &p_) { std::filesystem::create_directories(sys / p_); };
+  auto touch = [&](const fs::path &p_) { std::ofstream(sys / p_) << "1"; };
+  auto ln = [&](const std::string &target_, const fs::path &link_)
+  {
+    std::filesystem::create_directories((sys / link_).parent_path());
+    std::filesystem::create_directory_symlink(target_,sys / link_);
+  };
+
+  // sda with two partitions, dm-crypt on sda2, md raid1 over sdb1+sdc1
+  mk("devices/pci0/block/sda/sda1");
+  mk("devices/pci0/block/sda/sda2");
+  touch("devices/pci0/block/sda/sda1/partition");
+  touch("devices/pci0/block/sda/sda2/partition");
+  mk("devices/pci0/block/sdb/sdb1");
+  mk("devices/pci0/block/sdc/sdc1");
+  touch("devices/pci0/block/sdb/sdb1/partition");
+  touch("devices/pci0/block/sdc/sdc1/partition");
+  ln("../../../../pci0/block/sda/sda2","devices/virtual/block/dm-0/slaves/sda2");
+  ln("../../../../pci0/block/sdb/sdb1","devices/virtual/block/md0/slaves/sdb1");
+  ln("../../../../pci0/block/sdc/sdc1","devices/virtual/block/md0/slaves/sdc1");
+  ln("../../devices/pci0/block/sda","dev/block/8:0");
+  ln("../../devices/pci0/block/sda/sda1","dev/block/8:1");
+  ln("../../devices/pci0/block/sda/sda2","dev/block/8:2");
+  ln("../../devices/virtual/block/dm-0","dev/block/253:0");
+  ln("../../devices/virtual/block/md0","dev/block/9:0");
+
+  TEST_CHECK(BranchIndexMgr::disk_key(::makedev(8,0),sys) == "disk:sda");
+  TEST_CHECK(BranchIndexMgr::disk_key(::makedev(8,1),sys) == "disk:sda");
+  TEST_CHECK(BranchIndexMgr::disk_key(::makedev(8,2),sys) == "disk:sda");
+  TEST_CHECK(BranchIndexMgr::disk_key(::makedev(253,0),sys) == "disk:sda");
+  TEST_CHECK(BranchIndexMgr::disk_key(::makedev(9,0),sys) == "disk:md0");
+  TEST_CHECK(BranchIndexMgr::disk_key(::makedev(7,3),sys) == "dev:7:3");
+}
+
+static
+void
+test_branch_index_one_scan_per_disk()
+{
+  // two ROC branches, sub directories of one filesystem: same disk,
+  // so scanned one after the other, never at the same time
+  BIPool p;
+
+  for(int i = 0; i < 1500; i++)
+    {
+      std::ofstream(p.t.root / "Films" / ("f" + std::to_string(i))) << "x";
+      std::ofstream(p.t.root / "Series" / ("s" + std::to_string(i))) << "x";
+    }
+
+  const fs::path a = p.t.root / "Films";
+  const fs::path b = p.t.root / "Series";
+  p.set_branches(a.string() + "=ROC:" + b.string() + "=ROC");
+  TEST_CHECK(BranchIndexMgr::disk_key(a) == BranchIndexMgr::disk_key(b));
+
+  bool both_scanning = false;
+  bool saw_queued    = false;
+
+  BranchIndexMgr::refresh(cfg.branches);
+  for(int n = 0; n < 20000; n++)
+    {
+      int sa = p.state(0);
+      int sb = p.state(1);
+
+      both_scanning |= ((sa == BranchIndexSlot::SCANNING) &&
+                        (sb == BranchIndexSlot::SCANNING));
+      saw_queued    |= ((sa == BranchIndexSlot::QUEUED) ||
+                        (sb == BranchIndexSlot::QUEUED));
+      if((sa == BranchIndexSlot::READY) && (sb == BranchIndexSlot::READY))
+        break;
+      std::this_thread::sleep_for(std::chrono::microseconds(500));
+    }
+
+  TEST_CHECK(p.state(0) == BranchIndexSlot::READY);
+  TEST_CHECK(p.state(1) == BranchIndexSlot::READY);
+  TEST_CHECK(!both_scanning);
+  TEST_CHECK(saw_queued);
+
+  // one index file per branch, disk shown in the status
+  TEST_CHECK(std::filesystem::exists(p.index_file(a)));
+  TEST_CHECK(std::filesystem::exists(p.index_file(b)));
+  std::string st = BranchIndexMgr::status(cfg.branches);
+  TEST_CHECK(st.find(BranchIndexMgr::disk_key(a)) != std::string::npos);
+  TEST_MSG("%s",st.c_str());
+}

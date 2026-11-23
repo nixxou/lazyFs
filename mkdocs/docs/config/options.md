@@ -79,6 +79,13 @@ config file.
   umount" the mountpoint before mounting itself. Useful when
   performing live upgrades of mergerfs. May not work on
   FreeBSD. (default: false)
+* **[index.path](index.md)=PATH**: Directory where the indexes of
+  ROC branches are stored and memory mapped from. Empty keeps them in
+  memory and rescans at every mount. (default: "")
+* **[index.write-if-changed](index.md)=BOOL**: Only rewrite an index
+  file when its content changed. (default: true)
+* **[index.mlock](index.md)=SIZE**: Lock up to SIZE bytes of each
+  mapped index in RAM. (default: 0)
 * **ignorepponrename=BOOL**: Ignore path preserving on
   rename. Typically rename and link act differently depending on the
   policy of `create` (read below). Enabling this will cause rename and

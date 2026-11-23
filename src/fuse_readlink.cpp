@@ -18,6 +18,7 @@
 
 #include "fuse_readlink.hpp"
 
+#include "branch_index_mgr.hpp"
 #include "config.hpp"
 #include "errno.hpp"
 #include "fs_lstat.hpp"
@@ -94,6 +95,9 @@ _readlink(const Policy::Search &searchFunc_,
     return rv;
   if(obranches.empty())
     return -ENOENT;
+
+  if(BranchIndexMgr::readlink(*obranches[0],fusepath_,buf_,bufsize_,&rv))
+    return rv;
 
   return ::_readlink_core(obranches[0]->path,
                           fusepath_,

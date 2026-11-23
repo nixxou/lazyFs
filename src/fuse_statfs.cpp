@@ -18,6 +18,7 @@
 
 #include "fuse_statfs.hpp"
 
+#include "branch_index_mgr.hpp"
 #include "config.hpp"
 #include "errno.hpp"
 #include "fs_lstat.hpp"
@@ -105,9 +106,19 @@ _statfs(const Branches::Ptr  branches_,
       else
         fullpath = branch.path;
 
-      rv = fs::lstat(fullpath,&st);
-      if(rv < 0)
-        continue;
+      if((mode_ == StatFS::ENUM::FULL) &&
+         BranchIndexMgr::lstat(branch,fusepath_,&st,&rv))
+        {
+          if(rv < 0)
+            continue;
+          fullpath = branch.path;
+        }
+      else
+        {
+          rv = fs::lstat(fullpath,&st);
+          if(rv < 0)
+            continue;
+        }
 
       rv = fs::lstatvfs(fullpath,&stvfs);
       if(rv < 0)

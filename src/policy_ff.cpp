@@ -19,6 +19,7 @@
 #include "policy_ff.hpp"
 
 #include "errno.hpp"
+#include "branch_index_mgr.hpp"
 #include "fs_exists.hpp"
 #include "fs_info.hpp"
 #include "fs_path.hpp"
@@ -82,7 +83,7 @@ Policy::FF::Search::operator()(const Branches::Ptr  &branches_,
 {
   for(auto &branch : *branches_)
     {
-      if(!fs::exists(branch.path,fusepath_))
+      if(!fs::exists(branch,fusepath_))
         continue;
 
       output_.emplace_back(&branch);

@@ -18,6 +18,7 @@
 
 #pragma message "using getdents"
 
+#include "fuse_readdir_index.hpp"
 #include "dirinfo.hpp"
 #include "error.hpp"
 #include "fs_close.hpp"
@@ -52,6 +53,15 @@ _readdir(const Branches::Ptr &branches_,
   for(const auto &branch : *branches_)
     {
       int fd;
+
+      {
+        int rv;
+        if(ReaddirIndex::fill(branch,rel_dirpath_,names,dirents_,&rv))
+          {
+            err = rv;
+            continue;
+          }
+      }
       fs::inode::ReaddirCalc inodecalc(branch.path,rel_dirpath_);
 
       abs_dirpath = branch.path / rel_dirpath_;

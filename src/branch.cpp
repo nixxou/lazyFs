@@ -18,21 +18,25 @@
 
 #include "branch.hpp"
 #include "num.hpp"
+#include "branch_index_mgr.hpp"
 
 Branch::Branch()
-  : mode(Branch::Mode::RW)
+  : mode(Branch::Mode::RW),
+    index_slot(std::make_shared<BranchIndexSlot>())
 {
 }
 
 Branch::Branch(const Branch &branch_)
   : _minfreespace(branch_._minfreespace),
     mode(branch_.mode),
-    path(branch_.path)
+    path(branch_.path),
+    index_slot(branch_.index_slot)
 {
 }
 
 Branch::Branch(const u64 &default_minfreespace_)
-  : _minfreespace(&default_minfreespace_)
+  : _minfreespace(&default_minfreespace_),
+    index_slot(std::make_shared<BranchIndexSlot>())
 {
 }
 
@@ -54,6 +58,9 @@ Branch::to_string(void) const
       break;
     case Branch::Mode::NC:
       rv += "NC";
+      break;
+    case Branch::Mode::ROC:
+      rv += "ROC";
       break;
     }
 
@@ -83,7 +90,8 @@ Branch::minfreespace(void) const
 bool
 Branch::ro(void) const
 {
-  return (mode == Branch::Mode::RO);
+  return ((mode == Branch::Mode::RO) ||
+          (mode == Branch::Mode::ROC));
 }
 
 bool
@@ -96,5 +104,12 @@ bool
 Branch::ro_or_nc(void) const
 {
   return ((mode == Branch::Mode::RO) ||
+          (mode == Branch::Mode::ROC) ||
           (mode == Branch::Mode::NC));
+}
+
+bool
+Branch::roc(void) const
+{
+  return (mode == Branch::Mode::ROC);
 }

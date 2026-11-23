@@ -19,6 +19,7 @@
 #include "policy_newest.hpp"
 
 #include "errno.hpp"
+#include "branch_index_mgr.hpp"
 #include "fs_exists.hpp"
 #include "fs_info.hpp"
 #include "fs_path.hpp"
@@ -51,7 +52,7 @@ _create(const Branches::Ptr  &branches_,
     {
       if(branch.ro_or_nc())
         error_and_continue(err,EROFS);
-      if(!fs::exists(branch.path,fusepath_,&st))
+      if(!fs::exists(branch,fusepath_,&st))
         error_and_continue(err,ENOENT);
       if(st.st_mtime < newest)
         continue;
@@ -95,7 +96,7 @@ _action(const Branches::Ptr  &branches_,
     {
       if(branch.ro())
         error_and_continue(err,EROFS);
-      if(!fs::exists(branch.path,fusepath_,&st))
+      if(!fs::exists(branch,fusepath_,&st))
         error_and_continue(err,ENOENT);
       if(st.st_mtime < newest)
         continue;
@@ -131,7 +132,7 @@ _search(const Branches::Ptr  &branches_,
   newest = std::numeric_limits<time_t>::min();
   for(auto &branch : *branches_)
     {
-      if(!fs::exists(branch.path,fusepath_,&st))
+      if(!fs::exists(branch,fusepath_,&st))
         continue;
       if(st.st_mtime < newest)
         continue;

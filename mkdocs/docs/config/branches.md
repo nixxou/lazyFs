@@ -26,6 +26,10 @@ as delimiters. Example: `/mnt/hdd/disk0=RW,1234`
   faster to process).
 - NC: (no-create) - Will be excluded from `create` policies. You can't
   create on that branch but you can change or delete.
+- ROC: (read-only, cached) - Same as RO, and its metadata is answered
+  from an index instead of the drive, so listing and looking up files
+  does not spin it up. The branch must not change behind mergerfs'
+  back without a rescan. See [ROC branches](index.md).
 
 
 ### minfreespace

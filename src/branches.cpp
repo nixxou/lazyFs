@@ -20,6 +20,7 @@
 #include "ef.hpp"
 #include "errno.hpp"
 #include "from_string.hpp"
+#include "branch_index_mgr.hpp"
 #include "fs_glob.hpp"
 #include "fs_is_rofs.hpp"
 #include "fs_realpathize.hpp"
@@ -126,6 +127,8 @@ namespace l
       *mode_ = Branch::Mode::RO;
     ef(str_ == "NC")
       *mode_ = Branch::Mode::NC;
+    ef(str_ == "ROC")
+      *mode_ = Branch::Mode::ROC;
     else
       return -EINVAL;
 
@@ -237,7 +240,8 @@ namespace l
             continue;
           }
 
-        branch.path = path;
+        branch.path       = path;
+        branch.index_slot = std::make_shared<BranchIndexSlot>();
         branches_->emplace_back(branch);
       }
 
