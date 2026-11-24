@@ -4481,5 +4481,8 @@ TEST_LIST =
    {"roc_mirrors_switch_on_error",test_roc_mirrors_switch_on_error},
    {"roc_mirrors_switch_when_active",test_roc_mirrors_switch_when_active},
    {"roc_mirrors_waking_keeps_mirrors",test_roc_mirrors_waking_keeps_mirrors},
+   {"roc_mirrors_policies",test_roc_mirrors_policies},
+   {"branch_index_no_scan_waits_then_loads",test_branch_index_no_scan_waits_then_loads},
+   {"branch_index_reloads_file_written_elsewhere",test_branch_index_reloads_file_written_elsewhere},
    {NULL,NULL}
   };

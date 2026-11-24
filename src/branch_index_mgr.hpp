@@ -68,7 +68,8 @@ struct BranchIndexSlot
       QUEUED,      // waiting for another scan on the same disk
       SCANNING,
       READY,
-      FAILED       // scan failed, retried only on rescan
+      FAILED,      // scan failed, retried only on rescan
+      WAITING      // index.scan=false and no usable file yet
     };
 
   // Serializes invalidation and publication so a superseded scan can
@@ -78,6 +79,8 @@ struct BranchIndexSlot
   std::atomic<std::shared_ptr<const BranchIndex::Index>> index;
   // physical disk key, computed once when a scan is queued
   std::atomic<std::shared_ptr<const std::string>> disk;
+  // index file used for this slot (when index.path is set)
+  std::atomic<std::shared_ptr<const std::string>> file;
   // ROC branches: which cloud mirrors hold identical copies of which
   // files (see roc_mirrors.hpp)
   std::atomic<std::shared_ptr<const RocCoverage>> coverage;
@@ -105,6 +108,11 @@ namespace BranchIndexMgr
   // Human readable state of every ROC branch, one line per branch,
   // followed by the cloud mirrors and disk states.
   std::string status(const Branches::Ptr &branches);
+
+  // An index file in `index.path` was written (by this or another
+  // mergerfs): reload it into the slots using it, unless they already
+  // hold that content or are being rescanned here.
+  void file_written(const std::string &file);
 
   // Load (or scan) the index of an arbitrary directory into `slot_`,
   // through the per disk queues. Used for cloud mirrors.

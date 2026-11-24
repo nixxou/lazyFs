@@ -25,6 +25,7 @@
 #include "config_dummy.hpp"
 #include "config_flushonclose.hpp"
 #include "config_follow_symlinks.hpp"
+#include "config_roc_policy.hpp"
 #include "config_inodecalc.hpp"
 #include "config_link_exdev.hpp"
 #include "config_log_file.hpp"
@@ -136,7 +137,9 @@ public:
   ConfigBOOL     ignorepponrename;
   ConfigU64      index_mlock;
   ConfigSTR      index_path;
+  ConfigBOOL     index_scan;
   ConfigSTR      roc_mirrors_file;
+  RocPolicy      roc_policy;
   InodeCalc      inodecalc;
   ConfigBOOL     kernel_permissions_check;
   ConfigBOOL     lazy_umount_mountpoint;

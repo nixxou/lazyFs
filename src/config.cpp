@@ -100,7 +100,9 @@ Config::Config()
   ignorepponrename(false),
   index_mlock(0),
   index_path(),
+  index_scan(true),
   roc_mirrors_file(),
+  roc_policy(RocPolicy::ENUM::WAKE),
   inodecalc("hybrid-hash"),
   kernel_permissions_check(true),
   lazy_umount_mountpoint(false),
@@ -253,7 +255,9 @@ Config::Config()
   _map["ignorepponrename"]            = &ignorepponrename;
   _map["index.mlock"]                 = &index_mlock;
   _map["index.path"]                  = &index_path;
+  _map["index.scan"]                  = &index_scan;
   _map["roc.mirrors-file"]            = &roc_mirrors_file;
+  _map["roc.policy"]                  = &roc_policy;
   _map["inodecalc"]                   = &inodecalc;
   _map["kernel-cache"]                = &_dummy;
   _map["kernel-permissions-check"]    = &kernel_permissions_check;

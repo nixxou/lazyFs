@@ -358,7 +358,10 @@ _open(const Policy::Search &searchFunc_,
   {
     int fd;
     std::string mirror;
-    if(RocMirrors::open(*obranches[0],fusepath_,ffi_->flags,&fd,&mirror))
+    rv = RocMirrors::open(*obranches[0],fusepath_,ffi_->flags,&fd,&mirror);
+    if(rv < 0)
+      return rv;
+    if(rv > 0)
       {
         FileInfo *fi = new FileInfo(fd,obranches[0],fusepath_,ffi_->direct_io);
         fi->mirror = std::make_shared<const std::string>(std::move(mirror));

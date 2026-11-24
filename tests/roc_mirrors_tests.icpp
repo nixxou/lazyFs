@@ -481,3 +481,65 @@ test_roc_mirrors_waking_keeps_mirrors()
   TEST_CHECK(m.disk_state() == "sleeping");
   TEST_CHECK(m.read("Films/Alien.mkv") == "ALIEN!");
 }
+
+static
+void
+test_roc_mirrors_policies()
+{
+  BIMirrors m;
+  fuse_file_info_t ffi;
+  TEST_ASSERT(m.start());
+
+  // disk: always the disk, waking it
+  cfg.roc_policy = RocPolicy::ENUM::DISK;
+  TEST_ASSERT(RocMirrors::set_sleeping(cfg.branches,"all",true) == 0);
+  TEST_CHECK(m.read("Films/Alien.mkv") == "alien!");
+  TEST_CHECK(m.disk_state() != "sleeping");
+  TEST_ASSERT(m.wait_active());
+
+  // no-wake: mirrors while sleeping, never wakes the disk
+  cfg.roc_policy = RocPolicy::ENUM::NO_WAKE;
+  TEST_ASSERT(RocMirrors::set_sleeping(cfg.branches,"all",true) == 0);
+  TEST_CHECK(m.read("Films/Alien.mkv") == "ALIEN!");
+  TEST_CHECK(m.read("top.txt") == "<error " + std::to_string(-EAGAIN) + ">");
+  TEST_CHECK(m.disk_state() == "sleeping");
+  //   a dying mirror does not move the file to the sleeping disk
+  TEST_ASSERT(bi_open("Films/Alien.mkv",O_RDONLY,0x800001,&ffi) == 0);
+  {
+    FileInfo *fi = FileInfo::from_fh(ffi.fh);
+    int dfd = ::open(m.c1.c_str(),O_RDONLY|O_DIRECTORY);
+    TEST_ASSERT(::dup2(dfd,fi->fd) >= 0);
+    ::close(dfd);
+  }
+  TEST_CHECK(BIMirrors::fread(&ffi,3,0).starts_with("<error"));
+  TEST_CHECK(m.disk_state() == "sleeping");
+  bi_release(0x800001,&ffi);
+  //   once someone else woke it, the disk is read
+  TEST_ASSERT(RocMirrors::set_sleeping(cfg.branches,"all",false) == 0);
+  TEST_ASSERT(m.wait_active());
+  TEST_CHECK(m.read("Films/Alien.mkv") == "alien!");
+  TEST_CHECK(m.read("top.txt") == "top");
+
+  // mirror: only mirrors, even with an active disk
+  RocMirrors::reset();
+  TEST_ASSERT(m.start());
+  cfg.roc_policy = RocPolicy::ENUM::MIRROR;
+  TEST_CHECK(m.disk_state() == "active");
+  TEST_CHECK(m.read("Films/Brazil.mkv") == "BRAZIL");
+  TEST_CHECK(m.read("top.txt") == "<error " + std::to_string(-EAGAIN) + ">");
+  TEST_CHECK(m.disk_state() == "active");
+  //   never moved to the disk
+  TEST_ASSERT(bi_open("Films/Brazil.mkv",O_RDONLY,0x800002,&ffi) == 0);
+  TEST_CHECK(BIMirrors::fread(&ffi,3,0) == "BRA");
+  TEST_CHECK(BIMirrors::on_mirror(&ffi));
+  bi_release(0x800002,&ffi);
+
+  // the RW branch is not concerned
+  TEST_CHECK(m.read("rwonly.txt") == "rw");
+
+  // option parsing
+  TEST_CHECK(cfg.roc_policy.from_string("no-wake") == 0);
+  TEST_CHECK(cfg.roc_policy.to_string() == "no-wake");
+  TEST_CHECK(cfg.roc_policy.from_string("sometimes") == -EINVAL);
+  cfg.roc_policy = RocPolicy::ENUM::WAKE;
+}

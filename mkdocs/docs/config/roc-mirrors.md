@@ -1,6 +1,8 @@
 # ROC cloud mirrors
 
 * `roc.mirrors-file=PATH`: rules file. Defaults to empty (no mirrors).
+* `roc.policy=disk|wake|no-wake|mirror`: how this mount reads mirrored
+  files. Defaults to `wake`.
 
 [ROC branches](index.md) answer metadata from their index, so a
 sleeping drive is not woken by listings or lookups. Reading a file
@@ -112,6 +114,42 @@ not wait for it.
 Metadata (`stat`, including on open files) always comes from the
 branch's index, so a file read from a mirror looks exactly like the
 branch's.
+
+
+## Read policy per mount
+
+`roc.policy` decides, for one mergerfs mount, where files of ROC
+branches are read:
+
+| policy | disk active | disk sleeping, file mirrored | disk sleeping, file not mirrored |
+|---|---|---|---|
+| `disk` | disk | disk (woken) | disk (woken) |
+| `wake` (default) | disk | mirror | disk (woken) |
+| `no-wake` | disk | mirror | `EAGAIN`, the disk keeps sleeping |
+| `mirror` | mirror | mirror | `EAGAIN` |
+
+With `no-wake` a mirror failing while the disk sleeps returns the read
+error instead of moving the file to the disk. With `mirror` files are
+never moved to the disk.
+
+To give applications different policies, mount the same pool several
+times and point each application at its mount:
+
+```
+# general use
+mergerfs -o index.path=/var/lib/mergerfs/index,roc.mirrors-file=/etc/mergerfs/mirrors \
+  /mnt/ssd:/mnt/disk1/archive=ROC /mnt/pool
+# Plex: mirrors, never wakes a disk; reuses the indexes above
+mergerfs -o index.path=/var/lib/mergerfs/index,index.scan=false,roc.policy=no-wake,roc.mirrors-file=/etc/mergerfs/mirrors \
+  /mnt/ssd:/mnt/disk1/archive=ROC /mnt/pool-plex
+# backups: always the master copy
+mergerfs -o index.path=/var/lib/mergerfs/index,index.scan=false,roc.policy=disk \
+  /mnt/ssd:/mnt/disk1/archive=ROC /mnt/pool-backup
+```
+
+Sharing indexes between mounts is described in [ROC
+branches](index.md#several-mounts). Disk states (`roc-sleep`,
+`roc-wake`) belong to each mount: send them to every mount.
 
 
 ## Runtime control

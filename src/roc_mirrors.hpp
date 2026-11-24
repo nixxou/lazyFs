@@ -115,6 +115,10 @@ namespace RocMirrors
               bool                 force);
   // Load the rules once and start the mirrors not yet indexed.
   void refresh(const Branches::Ptr &branches);
+  // every mirror directory and its index slot
+  std::vector<std::pair<std::string,std::shared_ptr<BranchIndexSlot>>>
+  mirror_slots();
+
   // Rescan the mirror whose directory is `which_` ("all": every one).
   int  rescan(std::string_view which);
 
@@ -141,12 +145,12 @@ namespace RocMirrors
   std::vector<std::string> candidates(const Branch   &branch,
                                       const fs::path &fusepath);
 
-  // Called by open for a file on a ROC branch, opened read only. While
-  // the branch's disk sleeps, opens the first usable mirror copy:
-  // returns true with `*fd_` set. Otherwise returns false and, if the
-  // disk was sleeping, marks it active since the caller is about to
-  // read it.
-  bool open(const Branch   &branch,
+  // Called by open for a file on a ROC branch, opened read only,
+  // following `roc.policy`. Returns 1 with `*fd_` / `*mirror_` set when
+  // a mirror copy was opened, 0 when the caller must open the disk's
+  // file (the disk is then woken if needed), or -EAGAIN when the
+  // policy forbids reading the disk and no copy is usable.
+  int  open(const Branch   &branch,
             const fs::path &fusepath,
             int             flags,
             int            *fd,

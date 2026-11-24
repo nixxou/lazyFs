@@ -4,6 +4,7 @@
 * `index.path=PATH`: where indexes are stored. Defaults to empty (kept
   in memory, every mount rescans).
 * `index.mlock=SIZE`: defaults to `0` (nothing locked)
+* `index.scan=true|false`: defaults to `true`
 
 Every metadata request sent to mergerfs (`getattr`, `readdir`, looking
 up which branch holds a file, etc.) is normally forwarded to the
@@ -81,6 +82,23 @@ index in RAM, most useful parts first (directory table, then entries,
 then names). It has no effect without `index.path`. To cap the memory
 used instead, run mergerfs in a cgroup with `MemoryHigh=` (systemd);
 avoid `MemoryMax=`, which can kill mergerfs.
+
+
+## Several mounts
+
+Several mergerfs mounts can use the same branches and the same
+`index.path`, for example to give applications different
+[read policies](roc-mirrors.md#read-policy-per-mount). Index files are
+memory mapped, so mounts using the same file share its RAM.
+
+* Any index file written to `index.path` (by this or another mergerfs)
+  is picked up automatically by the mounts using it (inotify on
+  `index.path`, which wakes no disk).
+* Only one mount should scan: give the others `index.scan=false`. They
+  never scan, only load index files: until a file exists their branch
+  is queried normally (state `waiting`), and `index-rescan` on them
+  just reloads. Request rescans on the scanning mount; the others
+  follow.
 
 
 ## Restrictions

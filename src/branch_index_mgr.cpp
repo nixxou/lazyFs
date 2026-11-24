@@ -33,6 +33,8 @@
 #include <map>
 #include <thread>
 
+#include <poll.h>
+#include <sys/inotify.h>
 #include <unistd.h>
 #include <vector>
 
@@ -69,6 +71,7 @@ namespace
       case BranchIndexSlot::SCANNING:   return "scanning";
       case BranchIndexSlot::READY:      return "ready";
       case BranchIndexSlot::FAILED:     return "failed";
+      case BranchIndexSlot::WAITING:    return "waiting";
       }
     return "unknown";
   }
@@ -124,6 +127,7 @@ namespace
     std::shared_ptr<BranchIndexSlot> slot;
     uint64_t                         gen;
     bool                             force_scan;
+    bool                             scan;
     std::string                      index_dir;
     uint64_t                         mlock;
   };
@@ -188,6 +192,23 @@ namespace
     if(!job_.index_dir.empty())
       file = (fs::path(job_.index_dir) /
               BranchIndex::filename(job_.path)).string();
+
+    if(!file.empty())
+      job_.slot->file.store(std::make_shared<const std::string>(file));
+
+    // index.scan=false: another mergerfs scans; only ever load its file
+    // (a rescan request just reloads). Until the file exists the
+    // branch is queried normally, and file_written() loads it later.
+    if(!job_.scan)
+      {
+        if(!file.empty() && ::_try_load(job_,file))
+          return;
+        if(::_set_state(*job_.slot,job_.gen,BranchIndexSlot::WAITING))
+          SysLog::info("index: `{}` waits for `{}` (index.scan=false)",
+                       job_.path.string(),
+                       (file.empty() ? std::string("index.path") : file));
+        return;
+      }
 
     if(!job_.force_scan && !file.empty() && ::_try_load(job_,file))
       return;
@@ -302,6 +323,7 @@ namespace
     job.force_scan       = force_scan_;
     job.index_dir        = cfg.index_path;
     job.mlock            = cfg.index_mlock;
+    job.scan             = cfg.index_scan;
 
     // the branch answers directly until the new index is published
     job.gen = ::_invalidate(*job.slot,BranchIndexSlot::QUEUED);
@@ -372,6 +394,154 @@ namespace
   }
 }
 
+namespace
+{
+  // inotify on index.path: files renamed into place by a save (this
+  // or another mergerfs) are reloaded by the slots using them
+  std::mutex            g_watch_mutex;
+  std::string           g_watch_dir;
+  std::atomic<uint64_t> g_watch_gen{0};
+
+  void
+  _watcher(const std::string dir_,
+           const uint64_t    gen_)
+  {
+    int fd;
+    int wd;
+    alignas(struct inotify_event) char buf[16 * 1024];
+
+    fd = ::inotify_init1(IN_CLOEXEC|IN_NONBLOCK);
+    if(fd < 0)
+      {
+        SysLog::warning("index: inotify unavailable ({}), index files"
+                        " written by other mounts are not reloaded",
+                        strerror(errno));
+        return;
+      }
+    wd = ::inotify_add_watch(fd,dir_.c_str(),IN_MOVED_TO|IN_CLOSE_WRITE);
+    if(wd < 0)
+      {
+        SysLog::warning("index: cannot watch `{}`: {}",dir_,strerror(errno));
+        ::close(fd);
+        return;
+      }
+
+    while(g_watch_gen.load() == gen_)
+      {
+        ssize_t n;
+        struct pollfd pfd = {fd,POLLIN,0};
+
+        if(::poll(&pfd,1,500) <= 0)
+          continue;
+
+        n = ::read(fd,buf,sizeof(buf));
+        for(ssize_t pos = 0; pos < n;)
+          {
+            auto *ev = reinterpret_cast<const struct inotify_event*>(&buf[pos]);
+            pos += sizeof(struct inotify_event) + ev->len;
+
+            if(!ev->len)
+              continue;
+            std::string name(ev->name);
+            if(!name.ends_with(".idx"))
+              continue;
+
+            BranchIndexMgr::file_written((fs::path(dir_) / name).string());
+          }
+      }
+
+    ::close(fd);
+  }
+
+  void
+  _watch(const std::string &dir_)
+  {
+    uint64_t gen;
+    std::lock_guard<std::mutex> lk(g_watch_mutex);
+
+    if(dir_ == g_watch_dir)
+      return;
+
+    g_watch_dir = dir_;
+    gen = ++g_watch_gen;        // stops the previous watcher
+    if(dir_.empty())
+      return;
+
+    std::thread(::_watcher,dir_,gen).detach();
+  }
+
+  // reload `file_` into `slot_` (index of directory `path_`)
+  void
+  _reload(const fs::path                         &path_,
+          const std::shared_ptr<BranchIndexSlot> &slot_,
+          const std::string                      &file_)
+  {
+    int rv;
+    int state;
+    uint64_t gen;
+    std::shared_ptr<BranchIndex::Index> idx;
+    std::shared_ptr<const BranchIndex::Index> cur;
+
+    // a job of this mergerfs is running: its own result will come
+    state = slot_->state.load();
+    if((state == BranchIndexSlot::QUEUED) ||
+       (state == BranchIndexSlot::SCANNING) ||
+       (state == BranchIndexSlot::INELIGIBLE))
+      return;
+
+    gen = slot_->gen.load();
+    rv  = BranchIndex::load(file_,&idx);
+    if(rv < 0)
+      return;
+
+    cur = slot_->index.load();
+    if(cur && (cur->signature() == idx->signature()))
+      return;
+
+    if(cur)
+      {
+        idx->set_dev(cur->dev());
+      }
+    else
+      {
+        struct stat st;
+        if(::stat(path_.c_str(),&st) == 0)
+          idx->set_dev(st.st_dev);
+      }
+    if(cfg.index_mlock)
+      idx->mlock(cfg.index_mlock);
+
+    if(!::_publish(*slot_,gen,idx))
+      return;
+
+    SysLog::info("index: `{}` reloaded from `{}` (written elsewhere)",
+                 path_.string(),file_);
+    RocMirrors::index_changed();
+  }
+}
+
+void
+BranchIndexMgr::file_written(const std::string &file_)
+{
+  Branches::Ptr branches = cfg.branches;
+
+  for(const auto &b : *branches)
+    {
+      if(!b.index_slot || !b.roc())
+        continue;
+      auto f = b.index_slot->file.load();
+      if(f && (*f == file_))
+        ::_reload(b.path,b.index_slot,file_);
+    }
+
+  for(const auto &[path,slot] : RocMirrors::mirror_slots())
+    {
+      auto f = slot->file.load();
+      if(f && (*f == file_))
+        ::_reload(path,slot,file_);
+    }
+}
+
 void
 BranchIndexMgr::start(const fs::path                         &path_,
                       const std::shared_ptr<BranchIndexSlot> &slot_,
@@ -413,6 +583,7 @@ BranchIndexMgr::refresh(const Branches::Ptr &branches_)
         ::_start(branch,false);
     }
 
+  ::_watch(cfg.index_path);
   RocMirrors::refresh(branches_);
   RocMirrors::index_changed();
 }

@@ -16,6 +16,7 @@
 #include <map>
 #include <set>
 
+#include <sys/inotify.h>
 #include <sys/sysmacros.h>
 
 namespace
@@ -35,7 +36,9 @@ namespace
                                                        &cfg.follow_symlinks,
                                                        &cfg.symlinkify,
                                                        &cfg.index_path,
-                                                       &cfg.index_mlock})
+                                                       &cfg.index_scan,
+                                                       &cfg.index_mlock,
+                                                       &cfg.roc_policy})
         saved.emplace_back(o,o->to_string());
     }
 
@@ -71,7 +74,9 @@ namespace
       cfg.symlinkify             = false;
       cfg.posix_acl              = false;
       cfg.index_path             = t.idxdir.string();
+      cfg.index_scan             = true;
       cfg.index_mlock            = 0;
+      cfg.roc_policy             = RocPolicy::ENUM::WAKE;
       set_branches(t.root.string() + "=ROC:" + rw.string());
     }
 
@@ -684,4 +689,110 @@ test_branch_index_roc_rejects_foreign_file()
   struct stat st;
   TEST_ASSERT(::stat(file.c_str(),&st) == 0);
   TEST_CHECK((st.st_mode & 07777) == 0600);
+}
+
+namespace
+{
+  bool
+  bi_inotify_works()
+  {
+    int fd = ::inotify_init1(IN_CLOEXEC);
+    if(fd < 0)
+      return false;
+    ::close(fd);
+    return true;
+  }
+
+  // what another mergerfs scanning the branch would leave in index.path
+  void
+  bi_write_index_like_another_mergerfs(const fs::path &branch_,
+                                       const fs::path &file_)
+  {
+    std::shared_ptr<BranchIndex::Index> idx;
+    TEST_ASSERT(BranchIndex::build(branch_,&idx) == 0);
+    TEST_ASSERT(BranchIndex::save(*idx,file_,false,nullptr) == 0);
+  }
+
+  bool
+  bi_wait_getattr(const char *path_,
+                  const int   rv_)
+  {
+    for(int n = 0; n < 1000; n++)
+      {
+        if(bi_getattr(path_).rv == rv_)
+          return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      }
+    return false;
+  }
+}
+
+static
+void
+test_branch_index_no_scan_waits_then_loads()
+{
+  BIPool p;
+  if(!bi_inotify_works())
+    {
+      TEST_SKIP("no inotify here");
+      return;
+    }
+
+  // a secondary mount: never scans
+  cfg.index_scan = false;
+  BranchIndexMgr::refresh(cfg.branches);
+  for(int n = 0; (n < 1000) && (p.state(0) != BranchIndexSlot::WAITING); n++)
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  TEST_CHECK(p.state(0) == BranchIndexSlot::WAITING);
+  TEST_CHECK(!std::filesystem::exists(p.index_file(p.t.root)));
+  TEST_CHECK(BranchIndexMgr::status(cfg.branches).find(": waiting") != std::string::npos);
+
+  // queried normally meanwhile
+  std::ofstream(p.t.root / "Films" / "Sneaky.mkv") << "x";
+  TEST_CHECK(bi_getattr("Films/Sneaky.mkv").rv == 0);
+
+  // the primary mount writes the index: picked up automatically
+  bi_write_index_like_another_mergerfs(p.t.root,p.index_file(p.t.root));
+  TEST_ASSERT(p.wait_ready(0));
+
+  // now answered from that index
+  std::ofstream(p.t.root / "Films" / "Sneaky2.mkv") << "x";
+  TEST_CHECK(bi_getattr("Films/Sneaky2.mkv").rv == -ENOENT);
+
+  // the primary rescans: the new file replaces the index here too
+  bi_write_index_like_another_mergerfs(p.t.root,p.index_file(p.t.root));
+  TEST_CHECK(bi_wait_getattr("Films/Sneaky2.mkv",0));
+
+  // a rescan request on a non scanning mount only reloads: the file
+  // is neither removed nor rewritten
+  struct stat before;
+  struct stat after;
+  TEST_ASSERT(::stat(p.index_file(p.t.root).c_str(),&before) == 0);
+  TEST_CHECK(BranchIndexMgr::rescan(cfg.branches,"all") == 0);
+  TEST_ASSERT(p.wait_ready(0));
+  TEST_ASSERT(::stat(p.index_file(p.t.root).c_str(),&after) == 0);
+  TEST_CHECK(before.st_ino == after.st_ino);
+}
+
+static
+void
+test_branch_index_reloads_file_written_elsewhere()
+{
+  BIPool p;
+  if(!bi_inotify_works())
+    {
+      TEST_SKIP("no inotify here");
+      return;
+    }
+
+  BranchIndexMgr::refresh(cfg.branches);
+  TEST_ASSERT(p.wait_ready(0));
+
+  // another mergerfs (same branch, same index.path) rescanned: this
+  // one follows without a rescan of its own
+  std::ofstream(p.t.root / "Films" / "Sneaky.mkv") << "x";
+  TEST_CHECK(bi_getattr("Films/Sneaky.mkv").rv == -ENOENT);
+  bi_write_index_like_another_mergerfs(p.t.root,p.index_file(p.t.root));
+  TEST_CHECK(bi_wait_getattr("Films/Sneaky.mkv",0));
+  TEST_CHECK(p.state(0) == BranchIndexSlot::READY);
 }

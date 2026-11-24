@@ -168,6 +168,7 @@ namespace
       case BranchIndexSlot::SCANNING:   return "scanning";
       case BranchIndexSlot::READY:      return "ready";
       case BranchIndexSlot::FAILED:     return "failed";
+      case BranchIndexSlot::WAITING:    return "waiting";
       }
     return "unknown";
   }
@@ -727,6 +728,18 @@ RocMirrors::refresh(const Branches::Ptr &branches_)
     BranchIndexMgr::start(path,slot,false);
 }
 
+std::vector<std::pair<std::string,std::shared_ptr<BranchIndexSlot>>>
+RocMirrors::mirror_slots()
+{
+  std::vector<std::pair<std::string,std::shared_ptr<BranchIndexSlot>>> rv;
+  std::lock_guard<std::mutex> lk(g_mutex);
+
+  for(const auto &[path,slot] : g_mirrors)
+    rv.emplace_back(path,slot);
+
+  return rv;
+}
+
 int
 RocMirrors::rescan(std::string_view which_)
 {
@@ -844,8 +857,13 @@ RocMirrors::read(FileInfo     *fi_,
       return fs::pread(fi_->fd,buf_,size_,offset_);
   }
 
-  // the disk spins: continue there (this read does not wait for it)
-  if(::_disk_state(fi_->branch) == ACTIVE)
+  const RocPolicy policy = cfg.roc_policy;
+  const int       state  = ::_disk_state(fi_->branch);
+
+  // the disk spins (this read does not wait for it), or this mount
+  // always reads the disk: continue there. Never with `mirror`.
+  if(((state == ACTIVE) && (policy != RocPolicy::ENUM::MIRROR)) ||
+     (policy == RocPolicy::ENUM::DISK))
     ::_move_to_disk(fi_,"disk active");
 
   {
@@ -856,8 +874,12 @@ RocMirrors::read(FileInfo     *fi_,
     mirror = fi_->mirror;
   }
 
-  // the mirror failed mid read: put it aside, continue on the disk
+  // the mirror failed mid read: put it aside, continue on the disk if
+  // this mount may read it
   ::_set_backoff(*mirror,(fi_->branch.path / fi_->fusepath).string(),-rv);
+  if((policy == RocPolicy::ENUM::MIRROR) ||
+     ((policy == RocPolicy::ENUM::NO_WAKE) && (state == SLEEPING)))
+    return rv;
   if(!::_move_to_disk(fi_,"mirror read error"))
     return rv;
 
@@ -887,19 +909,34 @@ RocMirrors::candidates(const Branch   &branch_,
   return rv;
 }
 
-bool
+int
 RocMirrors::open(const Branch   &branch_,
                  const fs::path &fusepath_,
                  const int       flags_,
                  int            *fd_,
                  std::string    *mirror_)
 {
+  int state;
   uint64_t size = 0;
   std::vector<Candidate> c;
+  const RocPolicy policy = cfg.roc_policy;
 
-  // while waking too: an open must not wait for the spin up
-  if(!branch_.roc() || (::_disk_state(branch_) == ACTIVE))
-    return false;
+  if(!branch_.roc())
+    return 0;
+
+  state = ::_disk_state(branch_);
+
+  if(policy == RocPolicy::ENUM::DISK)
+    {
+      if(state != ACTIVE)
+        ::_wake(branch_,fusepath_);
+      return 0;
+    }
+
+  // mirrors while sleeping or waking (an open must not wait for a
+  // spin up), always with `mirror`
+  if((state == ACTIVE) && (policy != RocPolicy::ENUM::MIRROR))
+    return 0;
 
   if(::_candidates(branch_,fusepath_,&c,&size))
     {
@@ -931,14 +968,20 @@ RocMirrors::open(const Branch   &branch_,
 
           *fd_     = fd;
           *mirror_ = cand.mirror;
-          return true;
+          return 1;
         }
     }
+
+  // no usable copy
+  if(policy == RocPolicy::ENUM::MIRROR)
+    return -EAGAIN;
+  if((policy == RocPolicy::ENUM::NO_WAKE) && (state == SLEEPING))
+    return -EAGAIN;
 
   // the caller reads the disk: it is spinning from now on
   ::_wake(branch_,fusepath_);
 
-  return false;
+  return 0;
 }
 
 std::string
