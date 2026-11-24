@@ -104,6 +104,16 @@ namespace RocMirrors
   void refresh(const Branches::Ptr &branches);
   // Rescan the mirror whose directory is `which_` ("all": every one).
   int  rescan(std::string_view which);
+
+  // Disable / enable mirrors at or below directory `which_` ("all":
+  // every one), e.g. a cloud mount found unreachable by an external
+  // monitor. A disabled mirror is never opened; its index and the
+  // coverage are kept so enabling it is immediate. Disabling a mount
+  // also covers mirrors added below it later. -ENOENT if no current
+  // mirror matches.
+  int  set_enabled(std::string_view which,
+                   bool             enabled);
+  bool enabled(const std::string &mirror);
   // Recompute the coverage tables (an index changed).
   void index_changed();
 

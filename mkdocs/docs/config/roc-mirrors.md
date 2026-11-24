@@ -99,6 +99,44 @@ setfattr -n user.mergerfs.cmd.roc-mirror-rescan -v /mnt/gdrive/Films /mnt/pool/.
 setfattr -n user.mergerfs.cmd.roc-mirror-rescan -v all /mnt/pool/.mergerfs
 ```
 
+### Disabling mirrors
+
+An external monitor can take mirrors out of use, for example a cloud
+mount it found unreachable, and put them back:
+
+```
+setfattr -n user.mergerfs.cmd.roc-mirror-disable -v /mnt/gdrive /mnt/pool/.mergerfs
+setfattr -n user.mergerfs.cmd.roc-mirror-enable  -v /mnt/gdrive /mnt/pool/.mergerfs
+setfattr -n user.mergerfs.cmd.roc-mirror-disable -v all /mnt/pool/.mergerfs
+```
+
+* The value is a directory: every mirror at or below it is affected,
+  so disabling a mount covers all the rules pointing into it,
+  including ones added by a later rules reload.
+* A disabled mirror is never opened; files only it holds are read from
+  the disk (waking it). Its index and the coverage are kept, so
+  enabling it takes effect immediately. Enabling also clears the 60
+  seconds error backoff.
+* Enabling a sub directory does not override a disabled parent:
+  enable the directory that was disabled.
+* The value must match at least one current mirror (`ENOENT`
+  otherwise). The state survives rules reloads, not mergerfs restarts.
+* `index-status` marks such mirrors `disabled`.
+
+A minimal monitor:
+
+```
+#!/bin/sh
+CTRL=/mnt/pool/.mergerfs
+for m in /mnt/gdrive /mnt/onedrive; do
+  if timeout 10 stat -t "$m/.alive" >/dev/null 2>&1; then
+    setfattr -n user.mergerfs.cmd.roc-mirror-enable -v "$m" "$CTRL"
+  else
+    setfattr -n user.mergerfs.cmd.roc-mirror-disable -v "$m" "$CTRL"
+  fi
+done
+```
+
 A broken rules file is rejected as a whole and the previous rules stay
 in use. Mirrors are not on the drives: scanning them wakes no disk,
 but large cloud drives can take long to list.

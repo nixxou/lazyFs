@@ -4477,5 +4477,6 @@ TEST_LIST =
    {"roc_mirrors_coverage",test_roc_mirrors_coverage},
    {"roc_mirrors_open",test_roc_mirrors_open},
    {"roc_mirrors_commands",test_roc_mirrors_commands},
+   {"roc_mirrors_disable",test_roc_mirrors_disable},
    {NULL,NULL}
   };

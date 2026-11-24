@@ -63,6 +63,10 @@ _setxattr_cmd_xattr(const std::string_view &attrname_,
     return RocMirrors::reload(cfg.branches,true);
   if(cmd == "roc-mirror-rescan")
     return RocMirrors::rescan(attrval_);
+  if(cmd == "roc-mirror-disable")
+    return RocMirrors::set_enabled(attrval_,false);
+  if(cmd == "roc-mirror-enable")
+    return RocMirrors::set_enabled(attrval_,true);
   if(cmd == "roc-sleep")
     return RocMirrors::set_sleeping(cfg.branches,attrval_,true);
   if(cmd == "roc-wake")

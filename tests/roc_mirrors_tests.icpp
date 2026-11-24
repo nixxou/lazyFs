@@ -293,3 +293,56 @@ test_roc_mirrors_commands()
   TEST_CHECK(RocMirrors::reload(cfg.branches,true) == -EINVAL);
   TEST_CHECK(m.candidates("Films/Alien.mkv").size() == 1);
 }
+
+static
+void
+test_roc_mirrors_disable()
+{
+  BIMirrors m;
+  TEST_ASSERT(m.start());
+  TEST_ASSERT(RocMirrors::set_sleeping(cfg.branches,"all",true) == 0);
+
+  // bad or unknown targets
+  TEST_CHECK(RocMirrors::set_enabled("",false) == -EINVAL);
+  TEST_CHECK(RocMirrors::set_enabled("relative",false) == -EINVAL);
+  TEST_CHECK(RocMirrors::set_enabled("/no/such",false) == -ENOENT);
+
+  // disabling a whole mount: cloud1/Films is skipped, cloud3 used
+  TEST_CHECK(RocMirrors::set_enabled(m.c1.string(),false) == 0);
+  TEST_CHECK(!RocMirrors::enabled((m.c1 / "Films").string()));
+  TEST_CHECK(RocMirrors::enabled(m.c3.string()));
+  TEST_CHECK(m.status().find("mirror " + (m.c1 / "Films").string() +
+                             ": ready entries=") != std::string::npos);
+  TEST_CHECK(m.status().find(" disabled") != std::string::npos);
+  TEST_CHECK(m.read("Films/Alien.mkv") == "c3c3c3");
+  TEST_CHECK(m.sleeping());
+
+  // coverage is kept: enabling is immediate
+  TEST_CHECK(m.candidates("Films/Alien.mkv").size() == 2);
+  TEST_CHECK(RocMirrors::set_enabled(m.c1.string(),true) == 0);
+  TEST_CHECK(m.read("Films/Alien.mkv") == "ALIEN!");
+
+  // enabling a sub directory does not override a disabled parent
+  TEST_CHECK(RocMirrors::set_enabled(m.c1.string(),false) == 0);
+  TEST_CHECK(RocMirrors::set_enabled((m.c1 / "Films").string(),true) == 0);
+  TEST_CHECK(!RocMirrors::enabled((m.c1 / "Films").string()));
+  TEST_CHECK(RocMirrors::set_enabled(m.c1.string(),true) == 0);
+  TEST_CHECK(RocMirrors::enabled((m.c1 / "Films").string()));
+
+  // disabled state survives a rules reload
+  TEST_CHECK(RocMirrors::set_enabled(m.c3.string(),false) == 0);
+  TEST_CHECK(RocMirrors::reload(cfg.branches,true) == 0);
+  TEST_CHECK(!RocMirrors::enabled(m.c3.string()));
+  TEST_CHECK(m.read("Series/Dune/S01E01.mkv") == "dune");   // only on cloud3
+  TEST_CHECK(!m.sleeping());                                 // disk read
+
+  // all of them
+  TEST_CHECK(RocMirrors::set_sleeping(cfg.branches,"all",true) == 0);
+  TEST_CHECK(RocMirrors::set_enabled("all",false) == 0);
+  TEST_CHECK(m.read("Films/Brazil.mkv") == "brazil");
+  TEST_CHECK(!m.sleeping());
+  TEST_CHECK(RocMirrors::set_enabled("all",true) == 0);
+  TEST_CHECK(RocMirrors::enabled(m.c3.string()));
+  TEST_CHECK(RocMirrors::set_sleeping(cfg.branches,"all",true) == 0);
+  TEST_CHECK(m.read("Films/Brazil.mkv") == "BRAZIL");
+}

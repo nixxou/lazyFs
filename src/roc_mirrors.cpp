@@ -57,6 +57,9 @@ namespace
 
   std::mutex                           g_backoff_mutex;
   std::map<std::string,Clock::time_point> g_backoff;
+  // directories disabled by roc-mirror-disable: a mirror at or below
+  // one of them is not used
+  std::set<std::string>                g_disabled;
 
   std::string
   _unescape(const std::string_view s_)
@@ -157,6 +160,32 @@ namespace
       case BranchIndexSlot::FAILED:     return "failed";
       }
     return "unknown";
+  }
+
+  // `path_` is `dir_` or below it
+  bool
+  _at_or_below(const std::string &path_,
+               const std::string &dir_)
+  {
+    if(path_ == dir_)
+      return true;
+    if(dir_ == "/")
+      return true;
+    return ((path_.size() > dir_.size()) &&
+            (path_.compare(0,dir_.size(),dir_) == 0) &&
+            (path_[dir_.size()] == '/'));
+  }
+
+  bool
+  _disabled(const std::string &mirror_)
+  {
+    std::lock_guard<std::mutex> lk(g_backoff_mutex);
+
+    for(const auto &d : g_disabled)
+      if(::_at_or_below(mirror_,d))
+        return true;
+
+    return false;
   }
 
   bool
@@ -678,7 +707,7 @@ RocMirrors::open(const Branch   &branch_,
           int fd;
           struct stat st;
 
-          if(::_in_backoff(cand.mirror))
+          if(::_disabled(cand.mirror) || ::_in_backoff(cand.mirror))
             continue;
 
           fd = ::open(cand.path.c_str(),flags_|O_CLOEXEC);
@@ -739,6 +768,8 @@ RocMirrors::status(const Branches::Ptr &branches_)
       rv += "mirror " + path + ": " + ::_state_str(slot->state.load());
       if(idx)
         rv += " entries=" + std::to_string(idx->entries_count());
+      if(::_disabled(path))
+        rv += " disabled";
       if(::_in_backoff(path))
         rv += " backoff";
       rv += '\n';
@@ -781,5 +812,57 @@ RocMirrors::reset()
   {
     std::lock_guard<std::mutex> lk(g_backoff_mutex);
     g_backoff.clear();
+    g_disabled.clear();
   }
+}
+
+bool
+RocMirrors::enabled(const std::string &mirror_)
+{
+  return !::_disabled(::_normalize(mirror_));
+}
+
+int
+RocMirrors::set_enabled(std::string_view which_,
+                        const bool       enabled_)
+{
+  bool matched = false;
+  const bool all = (which_ == "all");
+  const std::string dir = (all ? std::string("/") :
+                           ::_normalize(std::string(which_)));
+
+  if(which_.empty() || (!all && (dir.front() != '/')))
+    return -EINVAL;
+
+  {
+    std::lock_guard<std::mutex> lk(g_mutex);
+    for(const auto &[path,slot] : g_mirrors)
+      if(::_at_or_below(path,dir))
+        matched = true;
+  }
+  if(!matched)
+    return -ENOENT;
+
+  {
+    std::lock_guard<std::mutex> lk(g_backoff_mutex);
+    if(enabled_)
+      {
+        // forget this directory and anything disabled below it; a
+        // parent still disabled keeps its mirrors disabled
+        for(auto it = g_disabled.begin(); it != g_disabled.end();)
+          it = (::_at_or_below(*it,dir) ? g_disabled.erase(it) : std::next(it));
+        // and give them a fresh chance
+        for(auto it = g_backoff.begin(); it != g_backoff.end();)
+          it = (::_at_or_below(it->first,dir) ? g_backoff.erase(it) : std::next(it));
+      }
+    else
+      {
+        g_disabled.insert(dir);
+      }
+  }
+
+  SysLog::info("roc: mirrors at or below `{}` {}",
+               dir,(enabled_ ? "enabled" : "disabled"));
+
+  return 0;
 }
