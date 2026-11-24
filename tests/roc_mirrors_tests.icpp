@@ -1,0 +1,295 @@
+// Tests for src/roc_mirrors.{hpp,cpp}. Included from tests.cpp after
+// branch_index_integration_tests.icpp.
+
+#include "fileinfo.hpp"
+#include "fuse_fgetattr.hpp"
+#include "roc_mirrors.hpp"
+
+namespace
+{
+  // BIPool plus three "cloud" directories holding copies of some of
+  // its files. Copies have the size of the original but different
+  // content, so reads tell where they came from.
+  struct BIMirrors
+  {
+    BIPool      p;
+    std::string old_rules_file = cfg.roc_mirrors_file;
+    fs::path    c1;
+    fs::path    c2;
+    fs::path    c3;
+    fs::path    rules;
+
+    BIMirrors()
+    {
+      RocMirrors::reset();
+      procfs::init();
+
+      const fs::path base = p.t.root.parent_path();
+      c1    = base / "cloud1";
+      c2    = base / "cloud2";
+      c3    = base / "cloud3";
+      rules = p.t.idxdir / "mirrors";
+
+      put(c1 / "Films" / "Alien.mkv","ALIEN!");   // same size: copy
+      put(c1 / "Films" / "Brazil.mkv","BR");      // other size: not a copy
+      put(c1 / "Films" / "Extra.mkv","not on hdd");
+      put(c2 / "Movies" / "Brazil.mkv","BRAZIL");
+      put(c3 / "Series" / "Dune" / "S01E01.mkv","DUNE");
+      put(c3 / "Films" / "Alien.mkv","c3c3c3");
+
+      write_rules({{p.t.root / "Films",c1 / "Films"},
+                   {p.t.root / "Films",c2 / "Movies"},
+                   {p.t.root,c3}});
+      cfg.roc_mirrors_file = rules.string();
+    }
+
+    ~BIMirrors()
+    {
+      RocMirrors::reset();
+      cfg.roc_mirrors_file = old_rules_file;
+    }
+
+    static
+    void
+    put(const fs::path &p_,
+        const std::string &data_)
+    {
+      std::filesystem::create_directories(p_.parent_path());
+      std::ofstream(p_,std::ios::trunc) << data_;
+    }
+
+    void
+    write_rules(const std::vector<std::pair<fs::path,fs::path>> &r_)
+    {
+      std::ofstream o(rules,std::ios::trunc);
+      o << "# test rules\n\n";
+      for(const auto &[l,m] : r_)
+        o << l.string() << "   " << m.string() << "/\n";
+    }
+
+    bool
+    wait_mirror(const fs::path &m_)
+    {
+      const std::string want = "mirror " + m_.string() + ": ready";
+      for(int n = 0; n < 2000; n++)
+        {
+          if(BranchIndexMgr::status(cfg.branches).find(want) != std::string::npos)
+            return true;
+          std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+      return false;
+    }
+
+    bool
+    start()
+    {
+      BranchIndexMgr::refresh(cfg.branches);
+      return (p.wait_ready(0) &&
+              wait_mirror(c1 / "Films") &&
+              wait_mirror(c2 / "Movies") &&
+              wait_mirror(c3));
+    }
+
+    std::vector<std::string>
+    candidates(const char *path_)
+    {
+      Branches::Ptr b = cfg.branches;
+      return RocMirrors::candidates((*b)[0],path_);
+    }
+
+    // content read through mergerfs' open
+    std::string
+    read(const char *path_)
+    {
+      int rv;
+      char buf[64];
+      fuse_file_info_t ffi;
+      static u64 nodeid = 0x500000;
+
+      rv = bi_open(path_,O_RDONLY,++nodeid,&ffi);
+      if(rv < 0)
+        return "<error " + std::to_string(rv) + ">";
+
+      FileInfo *fi = FileInfo::from_fh(ffi.fh);
+      ssize_t n = ::pread(fi->fd,buf,sizeof(buf),0);
+      bi_release(nodeid,&ffi);
+
+      return ((n < 0) ? "<read error>" : std::string(buf,n));
+    }
+
+    std::string
+    status()
+    {
+      return BranchIndexMgr::status(cfg.branches);
+    }
+
+    bool
+    sleeping()
+    {
+      Branches::Ptr b = cfg.branches;
+      return RocMirrors::sleeping((*b)[0]);
+    }
+  };
+}
+
+static
+void
+test_roc_mirrors_parse()
+{
+  std::string err;
+  std::vector<RocMirrors::Rule> r;
+
+  TEST_CHECK(RocMirrors::parse("# comment\n"
+                               "\n"
+                               "  /a/b    /m/x/  \n"
+                               "/with\\040space\t/m/y\r\n"
+                               "   # indented comment\n",&r,&err) == 0);
+  TEST_ASSERT(r.size() == 2);
+  TEST_CHECK(r[0].local == "/a/b" && r[0].mirror == "/m/x");
+  TEST_CHECK(r[1].local == "/with space" && r[1].mirror == "/m/y");
+
+  TEST_CHECK(RocMirrors::parse("/a /b /c\n",&r,&err) == -EINVAL);
+  TEST_CHECK(err.find("line 1") != std::string::npos);
+  TEST_CHECK(RocMirrors::parse("\n/a\n",&r,&err) == -EINVAL);
+  TEST_CHECK(err.find("line 2") != std::string::npos);
+  TEST_CHECK(RocMirrors::parse("a /b\n",&r,&err) == -EINVAL);
+  TEST_CHECK(RocMirrors::parse("",&r,&err) == 0 && r.empty());
+}
+
+static
+void
+test_roc_mirrors_coverage()
+{
+  BIMirrors m;
+  TEST_ASSERT(m.start());
+
+  using V = std::vector<std::string>;
+  // rule order is priority order; only same size copies count
+  TEST_CHECK(m.candidates("Films/Alien.mkv") ==
+             (V{(m.c1 / "Films/Alien.mkv").string(),
+                (m.c3 / "Films/Alien.mkv").string()}));
+  TEST_CHECK(m.candidates("Films/Brazil.mkv") ==
+             (V{(m.c2 / "Movies/Brazil.mkv").string()}));
+  TEST_CHECK(m.candidates("Series/Dune/S01E01.mkv") ==
+             (V{(m.c3 / "Series/Dune/S01E01.mkv").string()}));
+  TEST_CHECK(m.candidates("top.txt").empty());
+  TEST_CHECK(m.candidates("Films/Extra.mkv").empty());
+  TEST_CHECK(m.candidates("Films/nope").empty());
+
+  // 3 of the 4 regular files of the branch have a copy
+  TEST_CHECK(m.status().find("mirrored=3/4 files") != std::string::npos);
+  TEST_MSG("%s",m.status().c_str());
+}
+
+static
+void
+test_roc_mirrors_open()
+{
+  BIMirrors m;
+  Branches::Ptr b;
+  TEST_ASSERT(m.start());
+  b = cfg.branches;
+
+  // active disk: the disk is read
+  TEST_CHECK(!m.sleeping());
+  TEST_CHECK(m.read("Films/Alien.mkv") == "alien!");
+
+  // sleeping: copies, in rule order
+  TEST_CHECK(RocMirrors::set_sleeping(cfg.branches,m.p.t.root.string(),true) == 0);
+  TEST_CHECK(m.sleeping());
+  TEST_CHECK(m.status().find(": sleeping") != std::string::npos);
+  TEST_CHECK(m.read("Films/Alien.mkv") == "ALIEN!");
+  TEST_CHECK(m.read("Films/Brazil.mkv") == "BRAZIL");
+  TEST_CHECK(m.read("Series/Dune/S01E01.mkv") == "DUNE");
+  TEST_CHECK(m.sleeping());
+
+  // an open file read from a mirror still looks like the branch's file
+  {
+    fuse_file_info_t ffi;
+    struct stat st;
+    fuse_timeouts_t to{};
+    fuse_req_ctx_t ctx = bi_ctx();
+    TEST_ASSERT(bi_open("Films/Alien.mkv",O_RDONLY,0x600001,&ffi) == 0);
+    TEST_ASSERT(FUSE::fgetattr(&ctx,ffi.fh,&st,&to) == 0);
+    BIStat ref = bi_getattr("Films/Alien.mkv");
+    TEST_CHECK(st.st_ino == ref.st.st_ino);
+    TEST_CHECK(st.st_dev == ref.st.st_dev);
+    TEST_CHECK(st.st_mtim.tv_nsec == ref.st.st_mtim.tv_nsec);
+    bi_release(0x600001,&ffi);
+  }
+
+  // a copy changed since its mirror was scanned is skipped: next one
+  BIMirrors::put(m.c1 / "Films" / "Alien.mkv","x");
+  TEST_CHECK(m.read("Films/Alien.mkv") == "c3c3c3");
+  TEST_CHECK(m.sleeping());
+
+  // a failing mirror (ELOOP here) is put aside for a while; with no
+  // copy left the disk is read and marked active again
+  std::filesystem::remove(m.c3 / "Films" / "Alien.mkv");
+  std::filesystem::create_symlink("Alien.mkv",m.c3 / "Films" / "Alien.mkv");
+  TEST_CHECK(m.read("Films/Alien.mkv") == "alien!");
+  TEST_CHECK(!m.sleeping());
+  TEST_CHECK(m.status().find("mirror " + m.c3.string() + ": ready entries=") != std::string::npos);
+  TEST_CHECK(m.status().find(" backoff") != std::string::npos);
+
+  // still put aside: Dune, only on cloud3, now comes from the disk
+  TEST_CHECK(RocMirrors::set_sleeping(cfg.branches,"all",true) == 0);
+  TEST_CHECK(m.read("Series/Dune/S01E01.mkv") == "dune");
+  TEST_CHECK(!m.sleeping());
+
+  // a file no mirror holds wakes the disk
+  TEST_CHECK(RocMirrors::set_sleeping(cfg.branches,"all",true) == 0);
+  TEST_CHECK(m.read("Films/Brazil.mkv") == "BRAZIL");
+  TEST_CHECK(m.read("top.txt") == "top");
+  TEST_CHECK(!m.sleeping());
+
+  // the RW branch is never redirected
+  TEST_CHECK(m.read("rwonly.txt") == "rw");
+}
+
+static
+void
+test_roc_mirrors_commands()
+{
+  BIMirrors m;
+  TEST_ASSERT(m.start());
+
+  const std::string disk = BranchIndexMgr::disk_key(m.p.t.root);
+
+  TEST_CHECK(RocMirrors::set_sleeping(cfg.branches,"/no/such",true) == -ENOENT);
+  TEST_CHECK(RocMirrors::set_sleeping(cfg.branches,m.p.rw.string(),true) == -ENOENT);
+
+  TEST_CHECK(RocMirrors::set_sleeping(cfg.branches,disk,true) == 0);
+  TEST_CHECK(m.sleeping());
+  TEST_CHECK(m.status().find(disk + ": sleeping") != std::string::npos);
+  TEST_CHECK(RocMirrors::set_sleeping(cfg.branches,"all",false) == 0);
+  TEST_CHECK(!m.sleeping());
+  TEST_CHECK(RocMirrors::set_sleeping(cfg.branches,m.p.t.root.string() + "/",true) == 0);
+  TEST_CHECK(m.sleeping());
+
+  // mirror rescan: a copy added in the cloud is used after a rescan
+  using V = std::vector<std::string>;
+  BIMirrors::put(m.c2 / "Movies" / "Alien.mkv","c2c2c2");
+  TEST_CHECK(m.candidates("Films/Alien.mkv").size() == 2);
+  TEST_CHECK(RocMirrors::rescan("/no/such") == -ENOENT);
+  TEST_CHECK(RocMirrors::rescan(m.c2.string() + "/Movies") == 0);
+  TEST_ASSERT(m.wait_mirror(m.c2 / "Movies"));
+  TEST_CHECK(m.candidates("Films/Alien.mkv") ==
+             (V{(m.c1 / "Films/Alien.mkv").string(),
+                (m.c2 / "Movies/Alien.mkv").string(),
+                (m.c3 / "Films/Alien.mkv").string()}));
+
+  // rules reload: only cloud3 left
+  m.write_rules({{m.p.t.root,m.c3}});
+  TEST_CHECK(RocMirrors::reload(cfg.branches,true) == 0);
+  TEST_CHECK(m.candidates("Films/Alien.mkv") ==
+             (V{(m.c3 / "Films/Alien.mkv").string()}));
+  TEST_CHECK(m.status().find("mirror " + m.c1.string()) == std::string::npos);
+
+  // a broken rules file keeps the previous rules
+  {
+    std::ofstream(m.rules,std::ios::trunc) << "/only-one-field\n";
+  }
+  TEST_CHECK(RocMirrors::reload(cfg.branches,true) == -EINVAL);
+  TEST_CHECK(m.candidates("Films/Alien.mkv").size() == 1);
+}

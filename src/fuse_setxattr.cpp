@@ -19,6 +19,7 @@
 #include "fuse_setxattr.hpp"
 
 #include "branch_index_mgr.hpp"
+#include "roc_mirrors.hpp"
 #include "config.hpp"
 #include "errno.hpp"
 #include "fs_glob.hpp"
@@ -58,6 +59,14 @@ _setxattr_cmd_xattr(const std::string_view &attrname_,
     return (fuse_invalidate_all_nodes(),0);
   if(cmd == "index-rescan")
     return BranchIndexMgr::rescan(cfg.branches,attrval_);
+  if(cmd == "roc-mirrors-reload")
+    return RocMirrors::reload(cfg.branches,true);
+  if(cmd == "roc-mirror-rescan")
+    return RocMirrors::rescan(attrval_);
+  if(cmd == "roc-sleep")
+    return RocMirrors::set_sleeping(cfg.branches,attrval_,true);
+  if(cmd == "roc-wake")
+    return RocMirrors::set_sleeping(cfg.branches,attrval_,false);
 
   return -ENOATTR;
 }

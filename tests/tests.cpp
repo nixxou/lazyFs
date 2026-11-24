@@ -4253,6 +4253,7 @@ test_clonepath_modes()
 
 #include "branch_index_tests.icpp"
 #include "branch_index_integration_tests.icpp"
+#include "roc_mirrors_tests.icpp"
 
 TEST_LIST =
   {
@@ -4472,5 +4473,9 @@ TEST_LIST =
    {"branch_index_roc_refuses_writes",test_branch_index_roc_refuses_writes},
    {"branch_index_roc_rescan_forgets_old_file",test_branch_index_roc_rescan_forgets_old_file},
    {"branch_index_roc_rejects_foreign_file",test_branch_index_roc_rejects_foreign_file},
+   {"roc_mirrors_parse",test_roc_mirrors_parse},
+   {"roc_mirrors_coverage",test_roc_mirrors_coverage},
+   {"roc_mirrors_open",test_roc_mirrors_open},
+   {"roc_mirrors_commands",test_roc_mirrors_commands},
    {NULL,NULL}
   };

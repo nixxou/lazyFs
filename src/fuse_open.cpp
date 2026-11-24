@@ -87,6 +87,7 @@
 #include "state.hpp"
 
 #include "config.hpp"
+#include "roc_mirrors.hpp"
 #include "errno.hpp"
 #include "fileinfo.hpp"
 #include "fuse_release.hpp"
@@ -349,6 +350,18 @@ _open(const Policy::Search &searchFunc_,
   // before link_cow, which would copy the file inside the branch
   if(::_refuse_on_roc(obranches[0],ffi_->flags))
     return -EROFS;
+
+  // a sleeping disk: read an identical copy from a cloud mirror if
+  // there is one (otherwise the disk is read, and marked active)
+  {
+    int fd;
+    if(RocMirrors::open(*obranches[0],fusepath_,ffi_->flags,&fd))
+      {
+        FileInfo *fi = new FileInfo(fd,obranches[0],fusepath_,ffi_->direct_io);
+        ffi_->fh = fi->to_fh();
+        return 0;
+      }
+  }
 
   filepath = obranches[0]->path / fusepath_;
 

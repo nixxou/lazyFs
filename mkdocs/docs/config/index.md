@@ -100,6 +100,12 @@ avoid `MemoryMax=`, which can kill mergerfs.
 * Only Linux is supported.
 
 
+## Cloud mirrors
+
+Copies of ROC files on other mounts (cloud drives) can be read instead
+of a sleeping drive: see [ROC cloud mirrors](roc-mirrors.md).
+
+
 ## Runtime control
 
 ```

@@ -19,6 +19,7 @@
 #include "branch_index_mgr.hpp"
 
 #include "config.hpp"
+#include "roc_mirrors.hpp"
 #include "fs_exists.hpp"
 #include "syslog.hpp"
 
@@ -168,6 +169,7 @@ namespace
     ::_prepare_mapped(*idx,job_,file_);
     if(!::_publish(*job_.slot,job_.gen,idx))
       return true;
+    RocMirrors::index_changed();
 
     SysLog::info("index: branch `{}` ready from `{}`: {} entries",
                  job_.path.string(),file_,idx->entries_count());
@@ -240,6 +242,7 @@ namespace
 
     if(!::_publish(*job_.slot,job_.gen,idx))
       return;
+    RocMirrors::index_changed();
 
     SysLog::info("index: branch `{}` ready: {} entries, {} dirs, {} ms",
                  job_.path.string(),
@@ -286,15 +289,16 @@ namespace
   }
 
   void
-  _start(const Branch &branch_,
-         const bool    force_scan_)
+  _start(const fs::path                         &path_,
+         const std::shared_ptr<BranchIndexSlot> &slot_,
+         const bool                              force_scan_)
   {
     Job job;
     bool spawn;
     std::string key;
 
-    job.path             = branch_.path;
-    job.slot             = branch_.index_slot;
+    job.path             = path_;
+    job.slot             = slot_;
     job.force_scan       = force_scan_;
     job.index_dir        = cfg.index_path;
     job.mlock            = cfg.index_mlock;
@@ -303,7 +307,7 @@ namespace
     job.gen = ::_invalidate(*job.slot,BranchIndexSlot::QUEUED);
 
     // once per job, never on the request path
-    key = BranchIndexMgr::disk_key(branch_.path);
+    key = BranchIndexMgr::disk_key(path_);
     job.slot->disk.store(std::make_shared<const std::string>(key));
 
     {
@@ -316,6 +320,13 @@ namespace
 
     if(spawn)
       std::thread(::_disk_worker,key).detach();
+  }
+
+  void
+  _start(const Branch &branch_,
+         const bool    force_scan_)
+  {
+    ::_start(branch_.path,branch_.index_slot,force_scan_);
   }
 
   void
@@ -361,6 +372,14 @@ namespace
   }
 }
 
+void
+BranchIndexMgr::start(const fs::path                         &path_,
+                      const std::shared_ptr<BranchIndexSlot> &slot_,
+                      const bool                              force_scan_)
+{
+  ::_start(path_,slot_,force_scan_);
+}
+
 std::shared_ptr<const BranchIndex::Index>
 BranchIndexMgr::get(const Branch &branch_)
 {
@@ -393,6 +412,9 @@ BranchIndexMgr::refresh(const Branches::Ptr &branches_)
          (state == BranchIndexSlot::INELIGIBLE))
         ::_start(branch,false);
     }
+
+  RocMirrors::refresh(branches_);
+  RocMirrors::index_changed();
 }
 
 int
@@ -449,8 +471,15 @@ BranchIndexMgr::status(const Branches::Ptr &branches_)
           rv += " bytes=" + std::to_string(idx->byte_size());
           rv += (idx->mapped() ? " mapped" : " memory");
         }
+      {
+        auto cov = branch.index_slot->coverage.load();
+        if(cov && (cov->roc == idx) && cov->files)
+          rv += " " + RocMirrors::coverage_str(*cov);
+      }
       rv += '\n';
     }
+
+  rv += RocMirrors::status(branches_);
 
   return rv;
 }

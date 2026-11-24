@@ -136,6 +136,7 @@ public:
   ConfigBOOL     ignorepponrename;
   ConfigU64      index_mlock;
   ConfigSTR      index_path;
+  ConfigSTR      roc_mirrors_file;
   InodeCalc      inodecalc;
   ConfigBOOL     kernel_permissions_check;
   ConfigBOOL     lazy_umount_mountpoint;

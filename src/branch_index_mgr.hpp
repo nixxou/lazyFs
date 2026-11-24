@@ -57,6 +57,7 @@
 
 
 struct fuse_statx;
+struct RocCoverage;
 
 struct BranchIndexSlot
 {
@@ -77,6 +78,9 @@ struct BranchIndexSlot
   std::atomic<std::shared_ptr<const BranchIndex::Index>> index;
   // physical disk key, computed once when a scan is queued
   std::atomic<std::shared_ptr<const std::string>> disk;
+  // ROC branches: which cloud mirrors hold identical copies of which
+  // files (see roc_mirrors.hpp)
+  std::atomic<std::shared_ptr<const RocCoverage>> coverage;
   std::atomic<uint64_t> gen{0};
   std::atomic<uint64_t> published_gen{0};
   std::atomic<int>      state{IDLE};
@@ -98,8 +102,15 @@ namespace BranchIndexMgr
   int  rescan(const Branches::Ptr &branches,
               std::string_view     which);
 
-  // Human readable state of every ROC branch, one line per branch.
+  // Human readable state of every ROC branch, one line per branch,
+  // followed by the cloud mirrors and disk states.
   std::string status(const Branches::Ptr &branches);
+
+  // Load (or scan) the index of an arbitrary directory into `slot_`,
+  // through the per disk queues. Used for cloud mirrors.
+  void start(const fs::path                         &path,
+             const std::shared_ptr<BranchIndexSlot> &slot,
+             bool                                    force_scan);
 
   // Identifies the physical disk holding `path_`: scans of branches
   // with the same key run one after the other so a spinning drive is

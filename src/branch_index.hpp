@@ -159,6 +159,8 @@ namespace BranchIndex
                 std::span<const Entry>   *children) const;
 
     std::string_view name(const Entry &entry) const;
+    uint32_t         index_of(const Entry &entry) const
+    { return static_cast<uint32_t>(&entry - _entries.data()); }
     std::string_view symlink_target(const Entry &entry) const;
     void             to_stat(const Entry &entry,
                              struct stat *st) const;

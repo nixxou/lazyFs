@@ -20,6 +20,7 @@
 
 #include "config.hpp"
 #include "errno.hpp"
+#include "branch_index_mgr.hpp"
 #include "fileinfo.hpp"
 #include "fs_fstat.hpp"
 #include "fs_inode.hpp"
@@ -34,6 +35,14 @@ _fgetattr(const FileInfo  *fi_,
           struct stat     *st_)
 {
   int rv;
+
+  if(fi_->branch.roc() &&
+     BranchIndexMgr::lstat(fi_->branch,fi_->fusepath,st_,&rv) &&
+     (rv == 0))
+    {
+      fs::inode::calc(fi_->branch.path,fi_->fusepath,st_);
+      return 0;
+    }
 
   rv = fs::fstat(fi_->fd,st_);
   if(rv < 0)

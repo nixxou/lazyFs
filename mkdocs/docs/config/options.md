@@ -84,6 +84,9 @@ config file.
   memory and rescans at every mount. (default: "")
 * **[index.mlock](index.md)=SIZE**: Lock up to SIZE bytes of each
   mapped index in RAM. (default: 0)
+* **[roc.mirrors-file](roc-mirrors.md)=PATH**: Rules mapping
+  directories of ROC branches to mirrors (cloud mounts) read instead
+  of sleeping drives. (default: "")
 * **ignorepponrename=BOOL**: Ignore path preserving on
   rename. Typically rename and link act differently depending on the
   policy of `create` (read below). Enabling this will cause rename and
