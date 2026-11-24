@@ -54,16 +54,42 @@ disk:sda: sleeping
 ```
 
 
-## Sleeping and active disks
+## Sleeping, waking and active disks
 
-Each physical disk is `active` (default) or `sleeping`:
+Each physical disk is `sleeping`, `waking` or `active` (default):
 
 * **active**: files are read from the disk.
-* **sleeping**: opening a file of a ROC branch on that disk opens the
-  first mirror copy whose current size still matches. If there is
-  none (not mirrored, copy changed or removed since the mirror was
-  scanned, mirror failing) the disk is read, and since it now spins
-  it is marked **active** again.
+* **sleeping** and **waking**: opening a file of a ROC branch on that
+  disk opens the first mirror copy whose current size still matches.
+  If there is none (not mirrored, copy changed or removed since the
+  mirror was scanned, mirror failing) the disk is read, and the disk
+  starts waking.
+* **waking**: mergerfs spins the disk up from a background thread
+  (reading a block of one of its files). Once the disk answered it is
+  **active**. Meanwhile opens keep using the mirrors, so none of them
+  waits for the spin up.
+
+### Moving open files to the disk
+
+A file open on a mirror moves to the disk, without the application
+noticing:
+
+* **at its next read once the disk is active** (after `roc-wake`, or
+  after the disk was woken by another file). A film being played
+  continues from the disk, at the same position;
+* **right away if a mirror read fails** (network cut, rclone error):
+  the mirror is put aside for 60 seconds and the same read is retried
+  on the disk. The application sees a slow read, the time the disk
+  takes to spin up, not an error.
+
+This works because reads carry their offset: the descriptor is
+replaced in place between two reads. Files open on a mirror are
+therefore never set up for `passthrough.io`, whose reads would bypass
+mergerfs.
+
+**Copies must be identical.** Only sizes are compared: a copy of the
+same size but different content would mix both versions in the data
+read when the file moves to the disk.
 
 mergerfs does not watch the drives itself. An external tool (for
 example one built around `hd-idle`, or a script checking
@@ -83,9 +109,9 @@ A mirror whose open fails with anything but "no such file" (a dead
 rclone mount, I/O errors) is skipped for 60 seconds so every open does
 not wait for it.
 
-Files already open keep reading from where they were opened. Metadata
-(`stat`, including on open files) always comes from the branch's
-index, so a file read from a mirror looks exactly like the branch's.
+Metadata (`stat`, including on open files) always comes from the
+branch's index, so a file read from a mirror looks exactly like the
+branch's.
 
 
 ## Runtime control

@@ -86,7 +86,8 @@ public:
     : FH(fi_->fusepath),
       fd(fi_->fd),
       branch(fi_->branch),
-      direct_io(fi_->direct_io)
+      direct_io(fi_->direct_io),
+      mirror(fi_->mirror)
   {
   }
 
@@ -97,6 +98,10 @@ public:
   int fd;
   Branch branch;
   u32 direct_io:1;
+  // ROC branch file read from a cloud mirror: the mirror directory.
+  // Null once `fd` is the branch's own file. Changed under `mutex`
+  // (unique) when switching to the disk, see roc_mirrors.hpp.
+  std::shared_ptr<const std::string> mirror;
   // Serializes the fd state across concurrent writes on the same open
   // file. Concurrent writes happen with:
   // 1) writeback-cache + page-cache mode

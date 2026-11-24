@@ -4478,5 +4478,8 @@ TEST_LIST =
    {"roc_mirrors_open",test_roc_mirrors_open},
    {"roc_mirrors_commands",test_roc_mirrors_commands},
    {"roc_mirrors_disable",test_roc_mirrors_disable},
+   {"roc_mirrors_switch_on_error",test_roc_mirrors_switch_on_error},
+   {"roc_mirrors_switch_when_active",test_roc_mirrors_switch_when_active},
+   {"roc_mirrors_waking_keeps_mirrors",test_roc_mirrors_waking_keeps_mirrors},
    {NULL,NULL}
   };

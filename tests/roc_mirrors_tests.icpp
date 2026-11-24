@@ -3,6 +3,7 @@
 
 #include "fileinfo.hpp"
 #include "fuse_fgetattr.hpp"
+#include "fuse_read.hpp"
 #include "roc_mirrors.hpp"
 
 namespace
@@ -95,6 +96,47 @@ namespace
     {
       Branches::Ptr b = cfg.branches;
       return RocMirrors::candidates((*b)[0],path_);
+    }
+
+    // FUSE::read of an open file
+    static
+    std::string
+    fread(fuse_file_info_t *ffi_,
+          const size_t      size_,
+          const off_t       off_)
+    {
+      char buf[64];
+      fuse_req_ctx_t ctx = bi_ctx();
+      int rv = FUSE::read(&ctx,ffi_,buf,size_,off_);
+      return ((rv < 0) ? "<error " + std::to_string(rv) + ">" : std::string(buf,rv));
+    }
+
+    static
+    bool
+    on_mirror(fuse_file_info_t *ffi_)
+    {
+      FileInfo *fi = FileInfo::from_fh(ffi_->fh);
+      std::shared_lock<std::shared_mutex> lk(fi->mutex);
+      return !!fi->mirror;
+    }
+
+    std::string
+    disk_state()
+    {
+      Branches::Ptr b = cfg.branches;
+      return RocMirrors::disk_state((*b)[0]);
+    }
+
+    bool
+    wait_active()
+    {
+      for(int n = 0; n < 2000; n++)
+        {
+          if(disk_state() == "active")
+            return true;
+          std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+      return false;
     }
 
     // content read through mergerfs' open
@@ -345,4 +387,97 @@ test_roc_mirrors_disable()
   TEST_CHECK(RocMirrors::enabled(m.c3.string()));
   TEST_CHECK(RocMirrors::set_sleeping(cfg.branches,"all",true) == 0);
   TEST_CHECK(m.read("Films/Brazil.mkv") == "BRAZIL");
+}
+
+static
+void
+test_roc_mirrors_switch_on_error()
+{
+  BIMirrors m;
+  fuse_file_info_t ffi;
+  TEST_ASSERT(m.start());
+  TEST_ASSERT(RocMirrors::set_sleeping(cfg.branches,"all",true) == 0);
+
+  TEST_ASSERT(bi_open("Films/Alien.mkv",O_RDONLY,0x700001,&ffi) == 0);
+  TEST_CHECK(BIMirrors::on_mirror(&ffi));
+  TEST_CHECK(ffi.passthrough == 0);
+  TEST_CHECK(BIMirrors::fread(&ffi,3,0) == "ALI");
+
+  // the cloud dies under the open file: its descriptor now fails
+  {
+    FileInfo *fi = FileInfo::from_fh(ffi.fh);
+    int dfd = ::open(m.c1.c_str(),O_RDONLY|O_DIRECTORY);
+    TEST_ASSERT(dfd >= 0);
+    TEST_ASSERT(::dup2(dfd,fi->fd) >= 0);
+    ::close(dfd);
+  }
+
+  // no error for the application: the same read continues on the disk
+  TEST_CHECK(BIMirrors::fread(&ffi,3,3) == "en!");
+  TEST_CHECK(!BIMirrors::on_mirror(&ffi));
+  TEST_CHECK(BIMirrors::fread(&ffi,6,0) == "alien!");
+  // the failing mirror is put aside, the disk spins up
+  TEST_CHECK(m.status().find(" backoff") != std::string::npos);
+  TEST_CHECK(m.wait_active());
+
+  bi_release(0x700001,&ffi);
+}
+
+static
+void
+test_roc_mirrors_switch_when_active()
+{
+  BIMirrors m;
+  fuse_file_info_t ffi;
+  fuse_file_info_t ffi2;
+  TEST_ASSERT(m.start());
+  TEST_ASSERT(RocMirrors::set_sleeping(cfg.branches,"all",true) == 0);
+  TEST_CHECK(m.disk_state() == "sleeping");
+
+  TEST_ASSERT(bi_open("Films/Brazil.mkv",O_RDONLY,0x700002,&ffi) == 0);
+  TEST_CHECK(BIMirrors::on_mirror(&ffi));
+  TEST_CHECK(BIMirrors::fread(&ffi,3,0) == "BRA");
+
+  // a second open of the same file reuses its descriptor: still known
+  // to be a mirror copy
+  TEST_ASSERT(bi_open("Films/Brazil.mkv",O_RDONLY,0x700002,&ffi2) == 0);
+  TEST_CHECK(BIMirrors::on_mirror(&ffi2));
+
+  // the disk is woken: spun up in the background, then active, and
+  // the open files continue on it at their next read
+  TEST_CHECK(RocMirrors::set_sleeping(cfg.branches,"all",false) == 0);
+  TEST_CHECK(m.disk_state() != "sleeping");
+  TEST_ASSERT(m.wait_active());
+  TEST_CHECK(BIMirrors::fread(&ffi,3,3) == "zil");
+  TEST_CHECK(!BIMirrors::on_mirror(&ffi));
+  TEST_CHECK(BIMirrors::fread(&ffi2,6,0) == "brazil");
+  TEST_CHECK(!BIMirrors::on_mirror(&ffi2));
+
+  // new opens go to the disk
+  TEST_CHECK(m.read("Films/Alien.mkv") == "alien!");
+
+  bi_release(0x700002,&ffi2);
+  bi_release(0x700002,&ffi);
+}
+
+static
+void
+test_roc_mirrors_waking_keeps_mirrors()
+{
+  // a read the mirrors cannot serve wakes the disk (spun up in the
+  // background, then active); sleeping again brings the mirrors back
+  BIMirrors m;
+  TEST_ASSERT(m.start());
+  TEST_ASSERT(RocMirrors::set_sleeping(cfg.branches,"all",true) == 0);
+
+  // a file no mirror holds: read from the disk, which starts waking
+  TEST_CHECK(m.read("top.txt") == "top");
+  TEST_CHECK(m.disk_state() != "sleeping");
+  TEST_ASSERT(m.wait_active());
+  TEST_CHECK(m.read("Films/Alien.mkv") == "alien!");
+
+  // put back to sleep before a wake up completes: stays sleeping
+  TEST_CHECK(RocMirrors::set_sleeping(cfg.branches,"all",true) == 0);
+  TEST_CHECK(m.disk_state() == "sleeping");
+  TEST_CHECK(m.read("Films/Alien.mkv") == "ALIEN!");
 }

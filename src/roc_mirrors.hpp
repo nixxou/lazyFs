@@ -35,11 +35,20 @@
   indexes a coverage table lists, for every file of a ROC branch, the
   mirrors holding a copy of the same size.
 
-  Each physical disk is "active" (default) or "sleeping". While a disk
-  sleeps, opening a covered file of one of its ROC branches opens the
-  first mirror copy whose real size still matches; anything else is
-  read from the disk, which wakes it: the disk is then marked active
-  again. An external tool marks disks sleeping (`roc-sleep`).
+  Each physical disk is "sleeping", "waking" or "active" (default).
+  While a disk is not active, opening a covered file of one of its ROC
+  branches opens the first mirror copy whose real size still matches;
+  anything else is read from the disk, which wakes it. An external
+  tool marks disks sleeping (`roc-sleep`).
+
+  Waking (roc-wake, or a read the mirrors could not serve) first spins
+  the disk up from a background thread ("waking"); once it answered
+  the disk is "active". Files open on a mirror then move to the disk
+  at their next read, which therefore never waits for a spin up. A
+  mirror read error moves the file to the disk right away and retries
+  the read there. Reads use explicit offsets, so moving between two
+  reads is seamless for the application (copies must be identical:
+  only their size is checked).
 */
 
 #pragma once
@@ -50,7 +59,10 @@
 #include "fs_path.hpp"
 
 #include <cstdint>
+#include <cstddef>
 #include <memory>
+
+#include <sys/types.h>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -58,6 +70,7 @@
 
 
 struct BranchIndexSlot;
+class FileInfo;
 
 struct RocCoverage
 {
@@ -136,7 +149,19 @@ namespace RocMirrors
   bool open(const Branch   &branch,
             const fs::path &fusepath,
             int             flags,
-            int            *fd);
+            int            *fd,
+            std::string    *mirror);
+
+  // Read of an open file of a ROC branch. For a file open on a mirror:
+  // moves it to the disk first if the disk is active, and on a mirror
+  // read error moves it to the disk and retries there.
+  ssize_t read(FileInfo *fi,
+               char     *buf,
+               size_t    size,
+               off_t     offset);
+
+  // "sleeping", "waking" or "active"
+  std::string disk_state(const Branch &branch);
 
   std::string coverage_str(const RocCoverage &coverage);
   std::string status(const Branches::Ptr &branches);

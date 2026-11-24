@@ -306,10 +306,11 @@ _open_path(const fs::path    &filepath_,
 
 static
 int
-_open_fd(const int         fd_,
-         const Branch     *branch_,
-         const fs::path   &fusepath_,
-         fuse_file_info_t *ffi_)
+_open_fd(const int                                 fd_,
+         const Branch                             *branch_,
+         const fs::path                           &fusepath_,
+         fuse_file_info_t                         *ffi_,
+         const std::shared_ptr<const std::string> &mirror_)
 {
   int fd;
   FileInfo *fi;
@@ -322,6 +323,7 @@ _open_fd(const int         fd_,
     return fd;
 
   fi = new FileInfo(fd,branch_,fusepath_,ffi_->direct_io);
+  fi->mirror = mirror_;
 
   ffi_->fh = fi->to_fh();
 
@@ -355,9 +357,11 @@ _open(const Policy::Search &searchFunc_,
   // there is one (otherwise the disk is read, and marked active)
   {
     int fd;
-    if(RocMirrors::open(*obranches[0],fusepath_,ffi_->flags,&fd))
+    std::string mirror;
+    if(RocMirrors::open(*obranches[0],fusepath_,ffi_->flags,&fd,&mirror))
       {
         FileInfo *fi = new FileInfo(fd,obranches[0],fusepath_,ffi_->direct_io);
+        fi->mirror = std::make_shared<const std::string>(std::move(mirror));
         ffi_->fh = fi->to_fh();
         return 0;
       }
@@ -426,10 +430,17 @@ _open(const fuse_req_ctx_t *ctx_,
       // If the file is already open...
       if(fi)
         {
+          std::shared_ptr<const std::string> mirror;
+          {
+            std::shared_lock<std::shared_mutex> lk(fi->mutex);
+            mirror = fi->mirror;
+          }
+
           rv = ::_open_fd(fi->fd,
                           &fi->branch,
                           fusepath_,
-                          ffi_);
+                          ffi_,
+                          mirror);
 
           // If we fail to reopen the already open file we need to
           // treat it similarly to fuse_release. Since we increased
@@ -483,7 +494,10 @@ _open(const fuse_req_ctx_t *ctx_,
         case _(PassthroughIO::ENUM::RW,O_RDONLY):
         case _(PassthroughIO::ENUM::RW,O_WRONLY):
         case _(PassthroughIO::ENUM::RW,O_RDWR):
-          backing_id = FUSE::passthrough_open(fi->fd);
+          // not for mirror copies: every read must go through
+          // mergerfs so it can be switched to the disk
+          if(not fi->mirror)
+            backing_id = FUSE::passthrough_open(fi->fd);
           if(fuse_backing_id_is_valid(backing_id))
             {
               ffi_->backing_id  = backing_id;

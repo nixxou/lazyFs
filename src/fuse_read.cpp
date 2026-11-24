@@ -21,6 +21,7 @@
 #include "errno.hpp"
 #include "fileinfo.hpp"
 #include "fs_pread.hpp"
+#include "roc_mirrors.hpp"
 #include "ioprio.hpp"
 #include "state.hpp"
 
@@ -71,6 +72,11 @@ FUSE::read(const fuse_req_ctx_t   *ctx_,
   fi = state.get_fi(ctx_,ffi_->fh);
   if(not fi)
     return -EBADF;
+
+  // files of ROC branches may be read from a cloud mirror and switched
+  // to the disk on error or once the disk is spinning
+  if(fi->branch.roc())
+    return RocMirrors::read(fi,buf_,size_,offset_);
 
   if(fi->direct_io)
     return ::_read_direct_io(fi->fd,buf_,size_,offset_);

@@ -20,6 +20,8 @@
 
 #include "branch_index_mgr.hpp"
 #include "config.hpp"
+#include "fileinfo.hpp"
+#include "fs_pread.hpp"
 #include "syslog.hpp"
 
 #include <chrono>
@@ -30,6 +32,7 @@
 #include <set>
 #include <shared_mutex>
 #include <sstream>
+#include <thread>
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -52,8 +55,15 @@ namespace
 
   std::mutex g_coverage_mutex;
 
-  std::shared_mutex          g_disks_mutex;
-  std::map<std::string,bool> g_sleeping;
+  enum DiskState : int
+    {
+      SLEEPING,
+      WAKING,    // spinning up, mirrors still preferred
+      ACTIVE     // also the state of every disk never put to sleep
+    };
+
+  std::shared_mutex         g_disks_mutex;
+  std::map<std::string,int> g_disks;
 
   std::mutex                           g_backoff_mutex;
   std::map<std::string,Clock::time_point> g_backoff;
@@ -282,6 +292,114 @@ namespace
     return !out_->empty();
   }
 
+  int
+  _disk_state(const std::string &disk_)
+  {
+    std::shared_lock<std::shared_mutex> lk(g_disks_mutex);
+    auto it = g_disks.find(disk_);
+    return ((it == g_disks.end()) ? ACTIVE : it->second);
+  }
+
+  int
+  _disk_state(const Branch &branch_)
+  {
+    auto disk = ::_disk(branch_);
+    return (disk ? ::_disk_state(*disk) : ACTIVE);
+  }
+
+  // Read a block of `sample_` to spin the disk up, then mark it
+  // active unless it was put back to sleep meanwhile.
+  void
+  _warm_up(const std::string disk_,
+           const std::string sample_)
+  {
+    bool ok = sample_.empty();
+
+    if(!ok)
+      {
+        char buf[4096];
+        int fd = ::open(sample_.c_str(),O_RDONLY|O_CLOEXEC);
+        if(fd >= 0)
+          {
+            ok = (::pread(fd,buf,sizeof(buf),0) >= 0);
+            ::close(fd);
+          }
+      }
+
+    if(!ok)
+      {
+        SysLog::warning("roc: {} did not answer (read of `{}`): files"
+                        " open on mirrors stay there",disk_,sample_);
+        return;
+      }
+
+    {
+      std::unique_lock<std::shared_mutex> lk(g_disks_mutex);
+      auto it = g_disks.find(disk_);
+      if((it == g_disks.end()) || (it->second != WAKING))
+        return;
+      it->second = ACTIVE;
+    }
+
+    SysLog::info("roc: {} active: files open on mirrors move to it",disk_);
+  }
+
+  // SLEEPING -> WAKING and spin the disk up from `sample_`
+  bool
+  _start_waking(const std::string &disk_,
+                const std::string &sample_)
+  {
+    {
+      std::unique_lock<std::shared_mutex> lk(g_disks_mutex);
+      auto it = g_disks.find(disk_);
+      if((it == g_disks.end()) || (it->second != SLEEPING))
+        return false;
+      it->second = WAKING;
+    }
+
+    std::thread(::_warm_up,disk_,sample_).detach();
+
+    return true;
+  }
+
+  // a regular file of a ROC branch on `disk_`, to spin it up with
+  std::string
+  _sample(const std::string &disk_)
+  {
+    Branches::Ptr branches = cfg.branches;
+
+    for(const auto &b : *branches)
+      {
+        auto d = ::_disk(b);
+        auto idx = BranchIndexMgr::get(b);
+        if(!b.roc() || !d || (*d != disk_) || !idx)
+          continue;
+
+        std::vector<std::string> dirs{""};
+        for(size_t i = 0; (i < dirs.size()) && (i < 10000); i++)
+          {
+            std::span<const BranchIndex::Entry> kids;
+            if(idx->list(dirs[i],&kids) != BranchIndex::Result::FOUND)
+              continue;
+            for(const auto &e : kids)
+              {
+                std::string child = (dirs[i].empty() ?
+                                     std::string(idx->name(e)) :
+                                     dirs[i] + '/' + std::string(idx->name(e)));
+                if(e.flags & BranchIndex::Flag::LIVE)
+                  continue;
+                if(S_ISREG(e.mode) && e.size)
+                  return (b.path / child).string();
+                if(S_ISDIR(e.mode))
+                  dirs.push_back(std::move(child));
+              }
+          }
+      }
+
+    return {};
+  }
+
+  // the disk is about to be (or was) read for `fusepath_`
   void
   _wake(const Branch   &branch_,
         const fs::path &fusepath_)
@@ -290,16 +408,50 @@ namespace
     if(!disk)
       return;
 
+    if(::_start_waking(*disk,(branch_.path / fusepath_).string()))
+      SysLog::info("roc: {} waking: `{}` is not available on a mirror",
+                   *disk,fusepath_.string());
+  }
+
+  // Replace a mirror file's descriptor by the disk's file, in place
+  // (same fd number), like moveonenospc does.
+  bool
+  _move_to_disk(FileInfo   *fi_,
+                const char *why_)
+  {
+    int fd;
+    std::string path;
+
     {
-      std::unique_lock<std::shared_mutex> lk(g_disks_mutex);
-      auto it = g_sleeping.find(*disk);
-      if((it == g_sleeping.end()) || !it->second)
-        return;
-      it->second = false;
+      std::unique_lock<std::shared_mutex> lk(fi_->mutex);
+
+      if(!fi_->mirror)
+        return true;
+
+      path = (fi_->branch.path / fi_->fusepath).string();
+      fd = ::open(path.c_str(),O_RDONLY|O_CLOEXEC);
+      if(fd < 0)
+        {
+          SysLog::error("roc: cannot move `{}` to the disk ({}): {}",
+                        path,why_,strerror(errno));
+          return false;
+        }
+      if(::dup2(fd,fi_->fd) < 0)
+        {
+          int err = errno;
+          ::close(fd);
+          SysLog::error("roc: cannot move `{}` to the disk ({}): {}",
+                        path,why_,strerror(err));
+          return false;
+        }
+      ::close(fd);
+      fi_->mirror.reset();
     }
 
-    SysLog::info("roc: {} active again: `{}` is not available on a mirror",
-                 *disk,fusepath_.string());
+    SysLog::info("roc: `{}` now read from the disk ({})",path,why_);
+    ::_wake(fi_->branch,fi_->fusepath);
+
+    return true;
   }
 
   void
@@ -648,29 +800,76 @@ RocMirrors::set_sleeping(const Branches::Ptr &branches_,
   if(keys.empty())
     return -ENOENT;
 
-  {
-    std::unique_lock<std::shared_mutex> lk(g_disks_mutex);
-    for(const auto &k : keys)
-      g_sleeping[k] = sleeping_;
-  }
+  if(sleeping_)
+    {
+      std::unique_lock<std::shared_mutex> lk(g_disks_mutex);
+      for(const auto &k : keys)
+        g_disks[k] = SLEEPING;
+    }
+  else
+    {
+      for(const auto &k : keys)
+        ::_start_waking(k,::_sample(k));
+    }
 
   for(const auto &k : keys)
-    SysLog::info("roc: {} marked {}",k,(sleeping_ ? "sleeping" : "active"));
+    SysLog::info("roc: {} marked {}",k,(sleeping_ ? "sleeping" : "waking"));
 
   return 0;
+}
+
+std::string
+RocMirrors::disk_state(const Branch &branch_)
+{
+  switch(::_disk_state(branch_))
+    {
+    case SLEEPING: return "sleeping";
+    case WAKING:   return "waking";
+    default:       return "active";
+    }
+}
+
+ssize_t
+RocMirrors::read(FileInfo     *fi_,
+                 char         *buf_,
+                 const size_t  size_,
+                 const off_t   offset_)
+{
+  ssize_t rv;
+  std::shared_ptr<const std::string> mirror;
+
+  {
+    std::shared_lock<std::shared_mutex> lk(fi_->mutex);
+    if(!fi_->mirror)
+      return fs::pread(fi_->fd,buf_,size_,offset_);
+  }
+
+  // the disk spins: continue there (this read does not wait for it)
+  if(::_disk_state(fi_->branch) == ACTIVE)
+    ::_move_to_disk(fi_,"disk active");
+
+  {
+    std::shared_lock<std::shared_mutex> lk(fi_->mutex);
+    rv = fs::pread(fi_->fd,buf_,size_,offset_);
+    if((rv >= 0) || !fi_->mirror)
+      return rv;
+    mirror = fi_->mirror;
+  }
+
+  // the mirror failed mid read: put it aside, continue on the disk
+  ::_set_backoff(*mirror,(fi_->branch.path / fi_->fusepath).string(),-rv);
+  if(!::_move_to_disk(fi_,"mirror read error"))
+    return rv;
+
+  std::shared_lock<std::shared_mutex> lk(fi_->mutex);
+
+  return fs::pread(fi_->fd,buf_,size_,offset_);
 }
 
 bool
 RocMirrors::sleeping(const Branch &branch_)
 {
-  auto disk = ::_disk(branch_);
-  if(!disk)
-    return false;
-
-  std::shared_lock<std::shared_mutex> lk(g_disks_mutex);
-  auto it = g_sleeping.find(*disk);
-
-  return ((it != g_sleeping.end()) && it->second);
+  return (::_disk_state(branch_) == SLEEPING);
 }
 
 std::vector<std::string>
@@ -692,12 +891,14 @@ bool
 RocMirrors::open(const Branch   &branch_,
                  const fs::path &fusepath_,
                  const int       flags_,
-                 int            *fd_)
+                 int            *fd_,
+                 std::string    *mirror_)
 {
   uint64_t size = 0;
   std::vector<Candidate> c;
 
-  if(!branch_.roc() || !RocMirrors::sleeping(branch_))
+  // while waking too: an open must not wait for the spin up
+  if(!branch_.roc() || (::_disk_state(branch_) == ACTIVE))
     return false;
 
   if(::_candidates(branch_,fusepath_,&c,&size))
@@ -728,7 +929,8 @@ RocMirrors::open(const Branch   &branch_,
               continue;
             }
 
-          *fd_ = fd;
+          *fd_     = fd;
+          *mirror_ = cand.mirror;
           return true;
         }
     }
@@ -782,13 +984,14 @@ RocMirrors::status(const Branches::Ptr &branches_)
 
   {
     std::shared_lock<std::shared_mutex> lk(g_disks_mutex);
-    for(const auto &[k,v] : g_sleeping)
+    for(const auto &[k,v] : g_disks)
       disks.insert(k);
     for(const auto &k : disks)
       {
-        auto it = g_sleeping.find(k);
-        bool s = ((it != g_sleeping.end()) && it->second);
-        rv += k + ": " + (s ? "sleeping" : "active") + '\n';
+        auto it = g_disks.find(k);
+        int s = ((it == g_disks.end()) ? ACTIVE : it->second);
+        rv += k + ": " + ((s == SLEEPING) ? "sleeping" :
+                          (s == WAKING)   ? "waking"   : "active") + '\n';
       }
   }
 
@@ -807,7 +1010,7 @@ RocMirrors::reset()
   }
   {
     std::unique_lock<std::shared_mutex> lk(g_disks_mutex);
-    g_sleeping.clear();
+    g_disks.clear();
   }
   {
     std::lock_guard<std::mutex> lk(g_backoff_mutex);
