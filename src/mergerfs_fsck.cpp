@@ -419,9 +419,9 @@ mergerfs::fsck::main(int    argc_,
   bool copy_file;
   FixFunc fix_func;
 
-  app.description("fsck.mergerfs:"
+  app.description("fsck.lazyfs:"
                   " A tool to help diagnose and solve mergerfs pool issues");
-  app.name("USAGE: fsck.mergerfs");
+  app.name("USAGE: fsck.lazyfs");
 
   app.add_option("path",path)
     ->description("mergerfs path")
@@ -454,7 +454,7 @@ mergerfs::fsck::main(int    argc_,
     }
 
   if((geteuid() != 0) && (fix != "none"))
-    fmt::println(stderr,"WARNING: fsck.mergerfs should be run as root to apply fixes");
+    fmt::println(stderr,"WARNING: fsck.lazyfs should be run as root to apply fixes");
 
   fix_func = ::_select_fix_func(fix);
 

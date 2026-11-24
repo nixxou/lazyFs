@@ -103,7 +103,7 @@ static
 void
 _set_subtype(fuse_args *args_)
 {
-  ::_set_kv_option("subtype","mergerfs",args_);
+  ::_set_kv_option("subtype","lazyfs",args_);
 }
 
 static
@@ -147,7 +147,7 @@ static
 void
 _version(void)
 {
-  fmt::print("mergerfs v{}\n\n"
+  fmt::print("lazyfs v{} (mergerfs fork)\n\n"
              "https://github.com/trapexit/mergerfs\n"
              "https://trapexit.github.io/mergerfs\n"
              "https://github.com/trapexit/support\n"

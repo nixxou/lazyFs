@@ -4,6 +4,6 @@ set -e
 
 case "${1}" in
     configure)
-        chmod 4755 /usr/bin/mergerfs-fusermount
+        chmod 4755 /usr/bin/lazyfs-fusermount
         ;;
 esac

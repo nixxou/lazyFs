@@ -57,7 +57,7 @@ int main(int argc, char *argv[])
     basename = slash ? (slash + 1) : argv[0];
   }
 
-  type = "mergerfs";
+  type = "lazyfs";
   if (strncmp(basename.c_str(), "mount.fuse.", 11) == 0)
     type = basename.substr(11);
   if (strncmp(basename.c_str(), "mount.fuseblk.", 14) == 0)

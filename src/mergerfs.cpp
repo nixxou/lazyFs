@@ -214,7 +214,7 @@ _wait_for_mount()
           return true;
         }
 
-      SysLog::warning("Continuing to mount mergerfs despite {} branches not "
+      SysLog::warning("Continuing to mount lazyfs despite {} branches not "
                       "being different from the mountpoint filesystem",
                       failures);
     }
@@ -298,7 +298,7 @@ _warn_if_not_root()
     return;
 
   constexpr const char *s =
-    "mergerfs is not running as root"
+    "lazyfs is not running as root"
     " and may not work correctly";
   fmt::println(stderr,"* WARNING: {}",s);
   SysLog::warning("{}",s);
@@ -320,8 +320,8 @@ _main(int    argc_,
   args.argv      = argv_;
   args.allocated = false;
 
-  SysLog::info("mergerfs v{} started",MERGERFS_VERSION);
-  SysLog::info("Go to https://trapexit.github.io/mergerfs/latest/support for support");
+  SysLog::info("lazyfs v{} started",MERGERFS_VERSION);
+  SysLog::info("lazyfs is a mergerfs fork: https://github.com/nixxou/lazyFs");
 
   for(int i = 0; i < argc_; i++)
     SysLog::info("argv[{}]: {}",i,argv_[i]);
@@ -335,7 +335,7 @@ _main(int    argc_,
           const std::string s = err.to_string();
 
           SysLog::error("error: {}",s);
-          fmt::println(stderr,"mergerfs: ERROR - {}",s);
+          fmt::println(stderr,"lazyfs: ERROR - {}",s);
         }
 
       return EXIT_FAILURE;
@@ -382,9 +382,9 @@ _pick_app_and_run(int    argc_,
   appname = argv_[0];
   appname = appname.filename();
 
-  if(appname == "fsck.mergerfs")
+  if(appname == "fsck.lazyfs")
     return mergerfs::fsck::main(argc_,argv_);
-  if(appname == "mergerfs.collect-info")
+  if(appname == "lazyfs.collect-info")
     return mergerfs::collect_info::main(argc_,argv_);
 
   return ::_main(argc_,argv_);

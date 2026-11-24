@@ -30,7 +30,7 @@ namespace SysLog
   void
   open()
   {
-    const char *ident = "mergerfs";
+    const char *ident = "lazyfs";
     const int   option = (LOG_CONS|LOG_PID);
     const int   facility = LOG_USER;
 

@@ -12,7 +12,7 @@
 #  ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 #  OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
-$(info mergerfs MAKEFLAGS: $(MAKEFLAGS))
+$(info lazyfs MAKEFLAGS: $(MAKEFLAGS))
 
 ifeq ($(shell id -u),0)
 FAKEROOT ?=
@@ -37,7 +37,7 @@ TAR 	  ?= tar
 TOUCH 	  ?= touch
 
 BUILDDIR := build
-GITHUB_REPO ?= "https://github.com/trapexit/mergerfs"
+GITHUB_REPO ?= "https://github.com/nixxou/lazyFs"
 
 DEFAULT_TARGET := debian:13.amd64
 
@@ -98,7 +98,7 @@ TESTS_OBJS += $(TESTS:tests/%.cpp=build/.test_objs/%.cpp.o)
 TESTS_DEPS := $(TESTS:tests/%.cpp=build/.test_objs/%.cpp.d)
 TESTS_DEPS += $(DEPS)
 
-MANPAGE := mergerfs.1
+MANPAGE := lazyfs.1
 CPPFLAGS ?=
 override CPPFLAGS += \
 	-D_FILE_OFFSET_BITS=64 \
@@ -166,12 +166,12 @@ MAN1DIR       ?= $(MANDIR)/man1
 
 INSTALLBINDIR  ?= $(DESTDIR)$(BINDIR)
 INSTALLSBINDIR ?= $(DESTDIR)$(SBINDIR)
-INSTALLLIBDIR  ?= $(DESTDIR)$(LIBDIR)/mergerfs
+INSTALLLIBDIR  ?= $(DESTDIR)$(LIBDIR)/lazyfs
 INSTALLMAN1DIR ?= $(DESTDIR)$(MAN1DIR)
 
 
 .PHONY: all
-all: libfuse $(BUILDDIR)/mergerfs $(BUILDDIR)/fsck.mergerfs $(BUILDDIR)/mergerfs.collect-info
+all: libfuse $(BUILDDIR)/lazyfs $(BUILDDIR)/fsck.lazyfs $(BUILDDIR)/lazyfs.collect-info
 
 .PHONY: help
 help:
@@ -186,16 +186,16 @@ help:
 	@echo "GITREF=gitref   - gitref to use for release builds"
 
 
-$(BUILDDIR)/mergerfs: $(LIBFUSE) src/version.hpp $(OBJS)
+$(BUILDDIR)/lazyfs: $(LIBFUSE) src/version.hpp $(OBJS)
 	$(CXX) $(CXXFLAGS) $(INC_FLAGS) $(MFS_FLAGS) $(CPPFLAGS) $(OBJS) -o $@ $(LDFLAGS) $(LDLIBS)
 
-$(BUILDDIR)/fsck.mergerfs: $(BUILDDIR)/mergerfs
-	$(LN) -sf "mergerfs" $@
+$(BUILDDIR)/fsck.lazyfs: $(BUILDDIR)/lazyfs
+	$(LN) -sf "lazyfs" $@
 
-$(BUILDDIR)/mergerfs.collect-info: $(BUILDDIR)/mergerfs
-	$(LN) -sf "mergerfs" $@
+$(BUILDDIR)/lazyfs.collect-info: $(BUILDDIR)/lazyfs
+	$(LN) -sf "lazyfs" $@
 
-$(BUILDDIR)/tests: $(BUILDDIR)/mergerfs $(TESTS_OBJS)
+$(BUILDDIR)/tests: $(BUILDDIR)/lazyfs $(TESTS_OBJS)
 	$(CXX) $(CXXFLAGS) $(TESTS_FLAGS) $(INC_FLAGS) $(MFS_FLAGS) $(CPPFLAGS) $(TESTS_OBJS) -o $@ $(LDFLAGS) $(LDLIBS)
 
 .PHONY: libfuse
@@ -210,7 +210,7 @@ tests: $(BUILDDIR)/tests
 .PHONY:
 changelog:
 ifdef GIT_REPO
-	$(GIT2DEBCL) --name mergerfs > ChangeLog
+	$(GIT2DEBCL) --name lazyfs > ChangeLog
 else
 	@echo "WARNING: need git repo to generate ChangeLog"
 endif
@@ -255,9 +255,9 @@ install: install-base install-mount-tools install-preload install-man
 .PHONY: install-base
 install-base: all
 	$(MKDIR) -p "$(INSTALLBINDIR)"
-	$(INSTALL) -v -m 0755 "$(BUILDDIR)/mergerfs" "$(INSTALLBINDIR)/mergerfs"
-	$(LN) -fs "mergerfs" "${INSTALLBINDIR}/fsck.mergerfs"
-	$(LN) -fs "mergerfs" "${INSTALLBINDIR}/mergerfs.collect-info"
+	$(INSTALL) -v -m 0755 "$(BUILDDIR)/lazyfs" "$(INSTALLBINDIR)/lazyfs"
+	$(LN) -fs "lazyfs" "${INSTALLBINDIR}/fsck.lazyfs"
+	$(LN) -fs "lazyfs" "${INSTALLBINDIR}/lazyfs.collect-info"
 
 .PHONY: install-mount-tools
 install-mount-tools: install-base
@@ -276,18 +276,18 @@ install-preload: preload
 
 .PHONY: install-strip
 install-strip: install-base
-	$(STRIP) "$(INSTALLBINDIR)/mergerfs"
+	$(STRIP) "$(INSTALLBINDIR)/lazyfs"
 
 .PHONY: uninstall
-uninstall: uninstall-base uninstall-mount.mergerfs uninstall-preload uninstall-man
+uninstall: uninstall-base uninstall-mount.lazyfs uninstall-preload uninstall-man
 
 uninstall-base:
-	$(RM) -f "$(INSTALLBINDIR)/mergerfs"
-	$(RM) -f "$(INSTALLBINDIR)/fsck.mergerfs"
-	$(RM) -f "$(INSTALLBINDIR)/mergerfs.collect-info"
+	$(RM) -f "$(INSTALLBINDIR)/lazyfs"
+	$(RM) -f "$(INSTALLBINDIR)/fsck.lazyfs"
+	$(RM) -f "$(INSTALLBINDIR)/lazyfs.collect-info"
 
-uninstall-mount.mergerfs:
-	$(RM) -f "$(INSTALLBINDIR)/mount.mergerfs"
+uninstall-mount.lazyfs:
+	$(RM) -f "$(INSTALLBINDIR)/mount.lazyfs"
 
 uninstall-man:
 	$(RM) -f "$(INSTALLMAN1DIR)/$(MANPAGE)"
@@ -299,7 +299,7 @@ uninstall-preload:
 tarball: changelog version
 	$(eval VERSION := $(shell cat VERSION))
 	$(eval VERSION := $(subst -,_,$(VERSION)))
-	$(eval FILENAME := mergerfs-$(VERSION))
+	$(eval FILENAME := lazyfs-$(VERSION))
 	$(eval TMPDIR := $(shell $(MKTEMP) --tmpdir -d .$(FILENAME).XXXXXXXX))
 	$(MKDIR) $(TMPDIR)/$(FILENAME)
 	$(CP) -ar . $(TMPDIR)/$(FILENAME)
@@ -309,7 +309,7 @@ tarball: changelog version
 .PHONY: debian-changelog
 debian-changelog:
 ifdef GIT_REPO
-	$(GIT2DEBCL) --name mergerfs > debian/changelog
+	$(GIT2DEBCL) --name lazyfs > debian/changelog
 else
 	$(CP) -v ChangeLog debian/changelog
 	$(eval DISTRO := $(shell lsb_release -i -s | tr '[:upper:]' '[:lower:]'))
@@ -331,7 +331,7 @@ deb:
 	$(MAKE) version
 	$(FAKEROOT) dpkg-buildpackage -nc -uc -us
 	$(MKDIR) -p ./$(BUILDDIR)/pkgs/
-	$(MV) -v ../mergerfs*deb ./$(BUILDDIR)/pkgs/
+	$(MV) -v ../lazyfs*deb ./$(BUILDDIR)/pkgs/
 
 .PHONY: rpm-clean
 rpm-clean:
@@ -342,10 +342,10 @@ rpm: tarball
 	$(eval VERSION := $(shell cat VERSION))
 	$(eval VERSION := $(subst -,_,$(VERSION)))
 	$(MKDIR) -p rpmbuild/BUILD rpmbuild/RPMS rpmbuild/SOURCES
-	$(SED) 's/__VERSION__/$(VERSION)/g' mergerfs.spec > \
-		rpmbuild/SOURCES/mergerfs.spec
-	cp -ar mergerfs-$(VERSION).tar.gz rpmbuild/SOURCES
-	$(RPMBUILD) $(RPMBUILD_FLAGS) -ba rpmbuild/SOURCES/mergerfs.spec \
+	$(SED) 's/__VERSION__/$(VERSION)/g' lazyfs.spec > \
+		rpmbuild/SOURCES/lazyfs.spec
+	cp -ar lazyfs-$(VERSION).tar.gz rpmbuild/SOURCES
+	$(RPMBUILD) $(RPMBUILD_FLAGS) -ba rpmbuild/SOURCES/lazyfs.spec \
 		--define "_topdir $(CURDIR)/rpmbuild"
 
 .PHONY: install-build-pkgs

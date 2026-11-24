@@ -1,13 +1,13 @@
-Name:		mergerfs
+Name:		lazyfs
 Version:	__VERSION__
 Release:	1%{?dist}
-Summary:	A featureful FUSE based union filesystem
+Summary:	mergerfs fork with indexed read-only branches
 
 Group:		Applications/System
 License:	ISC
-URL:		https://github.com/trapexit/mergerfs
+URL:		https://github.com/nixxou/lazyFs
 
-Source:		mergerfs-%{version}.tar.gz
+Source:		lazyfs-%{version}.tar.gz
 
 BuildRequires:	gcc-c++
 # rpmbuild driven by the Makefile uses git to generate a version number
@@ -21,7 +21,7 @@ BuildRequires:	git
 %setup -q
 
 %description
-mergerfs is a union filesystem geared towards simplifying storage and
+lazyfs is a fork of mergerfs, a union filesystem geared towards simplifying storage and
 management of files across numerous commodity storage devices. It is
 similar to mhddfs, unionfs, and aufs.
 
@@ -32,12 +32,12 @@ make %{?_smp_mflags} CFLAGS="%{optflags}" CXXFLAGS="%{optflags}" LDFLAGS="%{__gl
 make install PREFIX=%{_prefix} DESTDIR=%{buildroot}
 
 %files
-/usr/bin/mergerfs
-/usr/bin/mergerfs-fusermount
-/usr/bin/fsck.mergerfs
-/usr/bin/mergerfs.collect-info
-/sbin/mount.mergerfs
-/usr/lib/mergerfs/preload.so
+/usr/bin/lazyfs
+/usr/bin/lazyfs-fusermount
+/usr/bin/fsck.lazyfs
+/usr/bin/lazyfs.collect-info
+/sbin/mount.lazyfs
+/usr/lib/lazyfs/preload.so
 %doc %{_mandir}/*
 
 %changelog

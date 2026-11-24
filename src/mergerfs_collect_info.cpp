@@ -113,7 +113,7 @@ static
 void
 _mergerfs_version(const std::string &output_)
 {
-  ::_run({"mergerfs","--version"},output_);
+  ::_run({"lazyfs","--version"},output_);
 }
 
 static
@@ -194,7 +194,7 @@ static
 void
 _journalctl(const std::string &output_)
 {
-  ::_run({"journalctl","-t","mergerfs","--since","60 minutes ago"},output_);
+  ::_run({"journalctl","-t","lazyfs","--since","60 minutes ago"},output_);
 }
 
 int
@@ -204,9 +204,9 @@ mergerfs::collect_info::main(int    argc_,
   CLI::App app;
   const char *output_filepath = "/tmp/mergerfs.info.txt";
 
-  app.description("mergerfs.collect-info:"
+  app.description("lazyfs.collect-info:"
                   " Collect info for support requests");
-  app.name("USAGE: mergerfs.collect-info");
+  app.name("USAGE: lazyfs.collect-info");
 
   try
     {

@@ -127,8 +127,8 @@ static const struct fuse_opt fuse_mount_opts[] =
 static void
 exec_fusermount(const char *argv[])
 {
-  execv(FUSERMOUNT_DIR "/mergerfs-" FUSERMOUNT_PROG,(char**)argv);
-  execvp("mergerfs-" FUSERMOUNT_PROG,(char**)argv);
+  execv(FUSERMOUNT_DIR "/lazyfs-" FUSERMOUNT_PROG,(char**)argv);
+  execvp("lazyfs-" FUSERMOUNT_PROG,(char**)argv);
   execv(FUSERMOUNT_DIR "/" FUSERMOUNT_PROG,(char**)argv);
   execvp(FUSERMOUNT_PROG,(char**)argv);
   execv(FUSERMOUNT_DIR "/" FUSERMOUNT3_PROG,(char**)argv);

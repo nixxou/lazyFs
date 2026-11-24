@@ -141,18 +141,18 @@ $(BUILDDIR)/libfuse.a: $(OBJS) | $(BUILDDIR)/stamp
 	$(AR) rcs $(BUILDDIR)/libfuse.a $(OBJS)
 
 .PHONY: utils
-utils: mergerfs-fusermount mount.mergerfs
+utils: lazyfs-fusermount mount.lazyfs
 
-$(BUILDDIR)/mergerfs-fusermount: util/fusermount.cpp | $(BUILDDIR)/stamp
-	$(CXX) $(CXXFLAGS) $(FUSE_FLAGS) -Ilib -o $(BUILDDIR)/mergerfs-fusermount util/fusermount.cpp
+$(BUILDDIR)/lazyfs-fusermount: util/fusermount.cpp | $(BUILDDIR)/stamp
+	$(CXX) $(CXXFLAGS) $(FUSE_FLAGS) -Ilib -o $(BUILDDIR)/lazyfs-fusermount util/fusermount.cpp
 
-mergerfs-fusermount: $(BUILDDIR)/mergerfs-fusermount
+lazyfs-fusermount: $(BUILDDIR)/lazyfs-fusermount
 
-$(BUILDDIR)/mount.mergerfs: $(BUILDDIR)/libfuse.a util/mount.mergerfs.cpp
+$(BUILDDIR)/mount.lazyfs: $(BUILDDIR)/libfuse.a util/mount.mergerfs.cpp
 	echo STATIC=$(STATIC) $(STATIC_FLAGS)
-	$(CXX) $(CXXFLAGS) $(FUSE_FLAGS) -o $(BUILDDIR)/mount.mergerfs util/mount.mergerfs.cpp $(BUILDDIR)/libfuse.a $(LDFLAGS)
+	$(CXX) $(CXXFLAGS) $(FUSE_FLAGS) -o $(BUILDDIR)/mount.lazyfs util/mount.mergerfs.cpp $(BUILDDIR)/libfuse.a $(LDFLAGS)
 
-mount.mergerfs: $(BUILDDIR)/mount.mergerfs
+mount.lazyfs: $(BUILDDIR)/mount.lazyfs
 
 $(BUILDDIR)/.objs/%.c.o: lib/%.c | $(BUILDDIR)/stamp
 	$(CC) $(CFLAGS) $(CPPFLAGS) $(FUSE_FLAGS) -c $< -o $@
@@ -169,14 +169,14 @@ distclean: clean
 
 .PHONY: strip
 strip:
-	$(STRIP) --strip-all $(BUILDDIR)/mount.mergerfs
-	$(STRIP) --strip-all $(BUILDDIR)/mergerfs-fusermount
+	$(STRIP) --strip-all $(BUILDDIR)/mount.lazyfs
+	$(STRIP) --strip-all $(BUILDDIR)/lazyfs-fusermount
 
-install-utils: mergerfs-fusermount mount.mergerfs strip
-	$(INSTALL) -D $(BUILDDIR)/mergerfs-fusermount "$(INSTALLBINDIR)/mergerfs-fusermount"
-	$(INSTALL) -D $(BUILDDIR)/mount.mergerfs "$(INSTALLSBINDIR)/mount.mergerfs"
-	$(CHOWN) root:root "$(INSTALLBINDIR)/mergerfs-fusermount"
-	$(CHMOD) u+s "$(INSTALLBINDIR)/mergerfs-fusermount"
+install-utils: lazyfs-fusermount mount.lazyfs strip
+	$(INSTALL) -D $(BUILDDIR)/lazyfs-fusermount "$(INSTALLBINDIR)/lazyfs-fusermount"
+	$(INSTALL) -D $(BUILDDIR)/mount.lazyfs "$(INSTALLSBINDIR)/mount.lazyfs"
+	$(CHOWN) root:root "$(INSTALLBINDIR)/lazyfs-fusermount"
+	$(CHMOD) u+s "$(INSTALLBINDIR)/lazyfs-fusermount"
 
 install: $(INSTALLUTILS)
 
